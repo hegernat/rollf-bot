@@ -21,7 +21,7 @@ load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 ALREADY_ROLLED_MESSAGES = [
-    "{user}, you already rolled today. Rules didn’t change.",
+    "{user}, you've already rolled today. Rules didn’t change.",
     "{user}, one roll per day. Still.",
     "{user}, that roll already happened.",
     "{user}, try again tomorrow. Today is done.",
@@ -158,7 +158,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
 async def on_guild_join(guild: discord.Guild):
-    # Check if onboarding already sent
+
     with db() as con:
         row = con.execute(
             "SELECT onboarding_sent FROM guild_meta WHERE guild_id=?",
@@ -168,7 +168,6 @@ async def on_guild_join(guild: discord.Guild):
         if row and row[0]:
             return
 
-    # Find first text channel where bot can send messages
     channel = None
     for ch in guild.text_channels:
         perms = ch.permissions_for(guild.me)
@@ -205,13 +204,11 @@ async def bot_daily_roll():
         now = datetime.now(TZ)
 
         if bot_rolled_today():
-            # sleep until next day 05:55
             tomorrow = (now + timedelta(days=1)).replace(hour=5, minute=55, second=0, microsecond=0)
             await asyncio.sleep((tomorrow - now).total_seconds())
             continue
 
         if now.hour >= 10:
-            # missed today
             tomorrow = (now + timedelta(days=1)).replace(hour=5, minute=55, second=0, microsecond=0)
             await asyncio.sleep((tomorrow - now).total_seconds())
             continue
@@ -220,7 +217,6 @@ async def bot_daily_roll():
             target = now.replace(hour=6, minute=0, second=0, microsecond=0)
             await asyncio.sleep((target - now).total_seconds())
 
-        # random delay inside window
         delay = secrets.randbelow(4 * 60 * 60)
         await asyncio.sleep(delay)
 
@@ -237,7 +233,6 @@ async def bot_daily_roll():
 
         for guild_id, channel_id in rows:
 
-            # --- STEP 1: Get channel ---
             channel = bot.get_channel(channel_id)
             if channel is None:
                 try:
@@ -260,7 +255,6 @@ async def bot_daily_roll():
                 except discord.HTTPException:
                     continue
 
-            # --- STEP 2: Send message ---
             try:
                 await channel.send(f"{BOT_NAME} rolled **{value}** 🎲")
             except discord.Forbidden:
@@ -337,7 +331,6 @@ async def help_cmd(interaction: discord.Interaction):
 async def roll(interaction: discord.Interaction):
     start, end = today_range()
 
-    # Cooldown-check
     with db() as con:
         cur = con.execute(
             """
@@ -355,13 +348,10 @@ async def roll(interaction: discord.Interaction):
             await interaction.response.send_message(msg)
             return
 
-    # Dra slutvärdet direkt (detta är facit)
     value = secrets.randbelow(100) + 1
 
-    # Hur många animationsteg?
     steps = secrets.randbelow(6)  # 0–5
 
-    # INSTANT ROLL (inga animationer alls)
     if steps == 0:
         upsert_user(interaction.user.id, interaction.user.name)
         insert_roll(interaction.user.id, interaction.user.name, value, "user")
@@ -370,24 +360,21 @@ async def roll(interaction: discord.Interaction):
         )
         return
 
-    # Annars: börja med "rolling..."
     await interaction.response.send_message(
         f"{interaction.user.mention} rolling..."
     )
     msg = await interaction.original_response()
 
-    # Animation med FEJK-siffror (aldrig slutvärdet)
     for _ in range(steps):
         fake = secrets.randbelow(100) + 1
         while fake == value:
             fake = secrets.randbelow(100) + 1
 
         await msg.edit(
-            content=f"{interaction.user.mention} rolling... {fake}"
+            content=f"{interaction.user.mention} rolling {fake}"
         )
         await asyncio.sleep(0.35)
 
-    # Spara och visa slutresultatet
     upsert_user(interaction.user.id, interaction.user.name)
     insert_roll(interaction.user.id, interaction.user.name, value, "user")
     await msg.edit(
