@@ -1,0 +1,23 @@
+# Secrets
+.env
+
+# SQLite (all variants)
+*.db*
+*.sqlite*
+
+# Backups
+backups/
+backup/
+*.bak
+
+# Python
+__pycache__/
+*.pyc
+
+# Python virtualenv
+venv/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
