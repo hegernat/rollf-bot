@@ -17,7 +17,19 @@ You can invite the live instance of RollF to your server:
 Note: this is a personal instance, uptime and support are not guaranteed.
 
 ## Setup
-```bash
-pip install -r requirements.txt
 
+```bash
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+Create a .env file in the project root:
+```
+DISCORD_TOKEN=your_token_here
+```
+
+Run the bot:
+```
+python rollf.py
+```
 
