@@ -349,59 +349,46 @@ async def roll(interaction: discord.Interaction):
     start, end = today_range()
 
     with db() as con:
-        cur = con.execute(
+        row = con.execute(
             """
-            SELECT 1 FROM rolls
+            SELECT value
+            FROM rolls
             WHERE user_id = ?
               AND actor_type = 'user'
               AND rolled_at BETWEEN ? AND ?
+            LIMIT 1
             """,
             (interaction.user.id, start, end)
+        ).fetchone()
+
+    if row:
+        value = row[0]
+
+        now = datetime.now(TZ)
+        midnight = datetime(now.year, now.month, now.day, tzinfo=TZ) + timedelta(days=1)
+        remaining = max(0, int((midnight - now).total_seconds()))
+
+        hours, remainder = divmod(remaining, 3600)
+        minutes, seconds = divmod(remainder, 60)
+
+        if remaining < 60:
+            time_left = f"{seconds}s"
+        elif remaining < 3600:
+            time_left = f"{minutes}m"
+        else:
+            time_left = f"{hours}h {minutes}m"
+
+        await interaction.response.send_message(
+            f"{interaction.user.mention}\n"
+            f"You already rolled **{value}** today.\n"
+            f"Try again in {time_left}."
         )
-        row = cur.fetchone()
-        if row:
-            # Get today's roll
-            roll_row = con.execute(
-                """
-                SELECT value FROM rolls
-                WHERE user_id = ?
-                AND actor_type = 'user'
-                AND rolled_at BETWEEN ? AND ?
-                LIMIT 1
-                """,
-                (interaction.user.id, start, end)
-            ).fetchone()
-
-            value = roll_row[0] if roll_row else "?"
-
-            # Time until reset
-            now = datetime.now(TZ)
-            tomorrow = datetime(now.year, now.month, now.day, tzinfo=TZ) + timedelta(days=1)
-            remaining = int((tomorrow - now).total_seconds())
-
-            hours, remainder = divmod(remaining, 3600)
-            minutes, seconds = divmod(remainder, 60)
-
-            if remaining < 60:
-                time_left = f"{seconds}s"
-            elif remaining < 3600:
-                time_left = f"{minutes}m"
-            else:
-                time_left = f"{hours}h {minutes}m"
-
-            msg = (
-                f"{interaction.user.mention}\n"
-                f"You already rolled **{value}** today.\n"
-                f"Try again in {time_left}."
-            )
-
-    await interaction.response.send_message(msg)
-    return
+        return
 
 
     value = secrets.randbelow(100) + 1
 
-    steps = secrets.randbelow(7)  # 0–6 
+    steps = secrets.randbelow(6)  # 0–6 
 
     if steps == 0:
         upsert_user(interaction.user.id, interaction.user.name)
