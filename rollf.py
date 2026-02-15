@@ -20,15 +20,6 @@ DB_PATH = "bot.db"
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
-ALREADY_ROLLED_MESSAGES = [
-    "{user}, you've already rolled today. Rules didn’t change.",
-    "{user}, one roll per day. Still.",
-    "{user}, that roll already happened.",
-    "{user}, try again tomorrow. Today is done.",
-    "{user}, no rerolls. Ever.",
-    "{user}, denied! Only once a day.",
-]
-
 ONBOARDING_TEXT = (
     "**Thanks for adding RollF!**\n\n"
     "RollF can post **one daily roll automatically**, but needs a channel to be configured.\n\n"
@@ -276,8 +267,21 @@ async def stats(
     user: discord.User | None = None
 ):
     target = user or interaction.user
-
     stats = get_user_stats(target.id)
+    start, end = today_range()
+
+    with db() as con:
+        today_row = con.execute(
+            """
+            SELECT value
+            FROM rolls
+            WHERE user_id = ?
+              AND actor_type = 'user'
+              AND rolled_at BETWEEN ? AND ?
+            LIMIT 1
+            """,
+            (target.id, start, end)
+        ).fetchone()
 
     if stats["rolls"] == 0:
         await interaction.response.send_message(
@@ -301,6 +305,19 @@ async def stats(
         ),
         inline=False
     )
+
+    if today_row:
+        embed.add_field(
+            name="Today",
+            value=f"Today's roll: **{today_row[0]}**",
+            inline=False
+        )
+    else:
+        embed.add_field(
+            name="Today",
+            value="No roll yet today.",
+            inline=False
+        )
 
     embed.add_field(
         name="Averages",
@@ -341,16 +358,50 @@ async def roll(interaction: discord.Interaction):
             """,
             (interaction.user.id, start, end)
         )
-        if cur.fetchone():
-            msg = random.choice(ALREADY_ROLLED_MESSAGES).format(
-                user=interaction.user.mention
+        row = cur.fetchone()
+        if row:
+            # Get today's roll
+            roll_row = con.execute(
+                """
+                SELECT value FROM rolls
+                WHERE user_id = ?
+                AND actor_type = 'user'
+                AND rolled_at BETWEEN ? AND ?
+                LIMIT 1
+                """,
+                (interaction.user.id, start, end)
+            ).fetchone()
+
+            value = roll_row[0] if roll_row else "?"
+
+            # Time until reset
+            now = datetime.now(TZ)
+            tomorrow = datetime(now.year, now.month, now.day, tzinfo=TZ) + timedelta(days=1)
+            remaining = int((tomorrow - now).total_seconds())
+
+            hours, remainder = divmod(remaining, 3600)
+            minutes, seconds = divmod(remainder, 60)
+
+            if remaining < 60:
+                time_left = f"{seconds}s"
+            elif remaining < 3600:
+                time_left = f"{minutes}m"
+            else:
+                time_left = f"{hours}h {minutes}m"
+
+            msg = (
+                f"{interaction.user.mention}\n"
+                f"You already rolled **{value}** today.\n"
+                f"Try again in {time_left}."
             )
-            await interaction.response.send_message(msg)
-            return
+
+    await interaction.response.send_message(msg)
+    return
+
 
     value = secrets.randbelow(100) + 1
 
-    steps = secrets.randbelow(6)  # 0–5
+    steps = secrets.randbelow(7)  # 0–6 
 
     if steps == 0:
         upsert_user(interaction.user.id, interaction.user.name)
@@ -420,13 +471,13 @@ async def leaderboards(interaction: discord.Interaction):
 
     # -------- TODAY --------
     today_lines = []
-    header_today = f"{'#':<3} {'USER':<16} {'ROLL':>4}"
+    header_today = f"{'#':<3} {'USER':<16} {'ROLL':>9}"
     today_lines.append(header_today)
     today_lines.append("-" * len(header_today))
 
     for i, (u, v) in enumerate(today, start=1):
         name = trim(u)
-        today_lines.append(f"{i:<3} {name:<16} {v:>4}")
+        today_lines.append(f"{i:<3} {name:<16} {v:>9}")
 
     today_block = (
         "\n".join(today_lines)
@@ -463,6 +514,21 @@ async def leaderboards(interaction: discord.Interaction):
         value=f"```{alltime_block}```",
         inline=False
     )
+    now = datetime.now(TZ)
+    tomorrow = datetime(now.year, now.month, now.day, tzinfo=TZ) + timedelta(days=1)
+    remaining = int((tomorrow - now).total_seconds())
+
+    hours, remainder = divmod(remaining, 3600)
+    minutes, seconds = divmod(remainder, 60)
+
+    if remaining < 60:
+        time_left = f"{seconds}s"
+    elif remaining < 3600:
+        time_left = f"{minutes}m"
+    else:
+        time_left = f"{hours}h {minutes}m"
+
+    embed.set_footer(text=f"Reset in {time_left} - Europe/Stockholm (UTC+1/UTC+2 DST)")
 
     await interaction.response.send_message(embed=embed)
 
