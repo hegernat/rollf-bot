@@ -420,104 +420,202 @@ async def roll(interaction: discord.Interaction):
     )
 
 @bot.tree.command(name="leaderboards")
-async def leaderboards(interaction: discord.Interaction):
-    start, end = today_range()
+@app_commands.describe(period="Select leaderboard period")
+@app_commands.choices(period=[
+    app_commands.Choice(name="Today", value="today"),
+    app_commands.Choice(name="Week", value="week"),
+    app_commands.Choice(name="Month", value="month"),
+    app_commands.Choice(name="Year", value="year"),
+    app_commands.Choice(name="All Time", value="alltime"),
+])
+async def leaderboards(
+    interaction: discord.Interaction,
+    period: app_commands.Choice[str] = None
+):
+    period_value = period.value if period else "today"
+    now = datetime.now(TZ)
+
+    include_bot = period_value == "today"
+
+    start_ts = None
+    end_ts = None
+
+    # ---- PERIOD LOGIC ----
+    if period_value == "today":
+        start = datetime(now.year, now.month, now.day, tzinfo=TZ)
+        end = start + timedelta(days=1)
+        start_ts = int(start.timestamp())
+        end_ts = int(end.timestamp())
+        title_suffix = f"Today — {now.strftime('%B %d')}"
+
+    elif period_value == "week":
+        start = now - timedelta(days=now.weekday())
+        start = datetime(start.year, start.month, start.day, tzinfo=TZ)
+        end = start + timedelta(days=7)
+        start_ts = int(start.timestamp())
+        end_ts = int(end.timestamp())
+        title_suffix = f"Week {now.isocalendar().week}"
+
+    elif period_value == "month":
+        start = datetime(now.year, now.month, 1, tzinfo=TZ)
+        if now.month == 12:
+            end = datetime(now.year + 1, 1, 1, tzinfo=TZ)
+        else:
+            end = datetime(now.year, now.month + 1, 1, tzinfo=TZ)
+        start_ts = int(start.timestamp())
+        end_ts = int(end.timestamp())
+        title_suffix = f"{now.strftime('%B')} {now.year}"
+
+    elif period_value == "year":
+        start = datetime(now.year, 1, 1, tzinfo=TZ)
+        end = datetime(now.year + 1, 1, 1, tzinfo=TZ)
+        start_ts = int(start.timestamp())
+        end_ts = int(end.timestamp())
+        title_suffix = f"{now.year}"
+
+    elif period_value == "alltime":
+        title_suffix = "All Time"
+
+    actor_filter = "IN ('user','bot')" if include_bot else "= 'user'"
 
     with db() as con:
-        today = con.execute(
-            """
-            SELECT
-                COALESCE(u.username, r.username) AS username,
-                MAX(r.value) AS v
-            FROM rolls r
-            LEFT JOIN users u ON u.user_id = r.user_id
-            WHERE r.rolled_at BETWEEN ? AND ?
-              AND r.actor_type IN ('user', 'bot')
-            GROUP BY r.user_id
-            ORDER BY v DESC
-            LIMIT 10
-            """,
-            (start, end)
-        ).fetchall()
 
-        alltime = con.execute(
-            """
-            SELECT
-                COALESCE(u.username, r.username) AS username,
-                SUM(r.value) AS s
-            FROM rolls r
-            LEFT JOIN users u ON u.user_id = r.user_id
-            WHERE r.actor_type IN ('user', 'bot')
-            GROUP BY r.user_id
-            ORDER BY s DESC
-            LIMIT 10    
-            """
-        ).fetchall()
+        if period_value == "alltime":
+            rows = con.execute(f"""
+                SELECT COALESCE(u.username, r.username), SUM(r.value), r.user_id
+                FROM rolls r
+                LEFT JOIN users u ON u.user_id = r.user_id
+                WHERE r.actor_type {actor_filter}
+                GROUP BY r.user_id
+                ORDER BY SUM(r.value) DESC
+                LIMIT 10
+            """).fetchall()
+
+            ranking = con.execute(f"""
+                SELECT r.user_id, SUM(r.value)
+                FROM rolls r
+                WHERE r.actor_type {actor_filter}
+                GROUP BY r.user_id
+                ORDER BY SUM(r.value) DESC
+            """).fetchall()
+
+            stats_row = con.execute(f"""
+                SELECT COUNT(DISTINCT user_id), COUNT(*)
+                FROM rolls
+                WHERE actor_type {actor_filter}
+            """).fetchone()
+
+        else:
+            aggregate = "MAX(r.value)" if period_value == "today" else "SUM(r.value)"
+
+            rows = con.execute(f"""
+                SELECT COALESCE(u.username, r.username), {aggregate}, r.user_id
+                FROM rolls r
+                LEFT JOIN users u ON u.user_id = r.user_id
+                WHERE r.rolled_at BETWEEN ? AND ?
+                  AND r.actor_type {actor_filter}
+                GROUP BY r.user_id
+                ORDER BY {aggregate} DESC
+                LIMIT 10
+            """, (start_ts, end_ts)).fetchall()
+
+            ranking = con.execute(f"""
+                SELECT r.user_id, {aggregate}
+                FROM rolls r
+                WHERE r.rolled_at BETWEEN ? AND ?
+                  AND r.actor_type {actor_filter}
+                GROUP BY r.user_id
+                ORDER BY {aggregate} DESC
+            """, (start_ts, end_ts)).fetchall()
+
+            stats_row = con.execute(f"""
+                SELECT COUNT(DISTINCT user_id), COUNT(*)
+                FROM rolls
+                WHERE rolled_at BETWEEN ? AND ?
+                  AND actor_type {actor_filter}
+            """, (start_ts, end_ts)).fetchone()
 
     embed = discord.Embed(title="Leaderboards")
 
-    # -------- TODAY --------
-    today_lines = []
-    header_today = f"{'#':<3} {'USER':<16} {'ROLL':>9}"
-    today_lines.append(header_today)
-    today_lines.append("-" * len(header_today))
+    # ---- TABLE ----
+    lines = []
+    header = f"{'#':<3} {'USER':<16} {'SCORE':>10}"
+    lines.append(header)
+    lines.append("-" * len(header))
 
-    for i, (u, v) in enumerate(today, start=1):
-        name = trim(u)
-        today_lines.append(f"{i:<3} {name:<16} {v:>9}")
+    for i, (username, score, uid) in enumerate(rows, start=1):
+        name = trim(username)
 
-    today_block = (
-        "\n".join(today_lines)
-        if len(today) > 0
-        else "No rolls today."
-    )
+        if i == 1:
+            medal = " 🥇"
+        elif i == 2:
+            medal = " 🥈"
+        elif i == 3:
+            medal = " 🥉"
+        else:
+            medal = ""
+
+        lines.append(f"{i:<3} {name:<16} {score:>10,}{medal}")
+
+    block = "\n".join(lines) if rows else "No data."
 
     embed.add_field(
-        name="Today — Highest Roll",
-        value=f"```{today_block}```",
+        name=title_suffix,
+        value=f"```{block}```",
         inline=False
     )
 
-    # -------- ALL TIME --------
-    alltime_lines = []
-    header_all = f"{'#':<3} {'USER':<16} {'TOTAL':>9}"
-    alltime_lines.append(header_all)
-    alltime_lines.append("-" * len(header_all))
+    # ---- PARTICIPATION STATS ----
+    players_count = stats_row[0] or 0
+    rolls_count = stats_row[1] or 0
 
-    for i, (u, s) in enumerate(alltime, start=1):
-        name = trim(u)
-        alltime_lines.append(
-            f"{i:<3} {name:<16} {s:>9,}"
+    embed.add_field(
+        name="Statistics",
+        value=f"Users: {players_count}\nRolls: {rolls_count}",
+        inline=False
+    )
+
+    # ---- USER POSITION ----
+    user_rank = None
+    user_score = None
+
+    for index, (uid, score) in enumerate(ranking, start=1):
+        if uid == interaction.user.id:
+            user_rank = index
+            user_score = score
+            break
+
+    top_ids = [uid for _, _, uid in rows]
+
+    if user_rank and interaction.user.id not in top_ids:
+        embed.add_field(
+            name="Your Position",
+            value=f"#{user_rank} — {user_score:,}",
+            inline=False
         )
 
-    alltime_block = (
-        "\n".join(alltime_lines)
-        if len(alltime) > 0
-        else "No data."
-    )
+    # ---- RESET TIMER (ONLY TODAY) ----
+    if period_value == "today":
+        midnight = datetime(now.year, now.month, now.day, tzinfo=TZ) + timedelta(days=1)
+        remaining = max(0, int((midnight - now).total_seconds()))
 
-    embed.add_field(
-        name="All Time",
-        value=f"```{alltime_block}```",
-        inline=False
-    )
-    now = datetime.now(TZ)
-    tomorrow = datetime(now.year, now.month, now.day, tzinfo=TZ) + timedelta(days=1)
-    remaining = int((tomorrow - now).total_seconds())
+        if remaining < 60:
+            time_left = "0m"
+        elif remaining < 3600:
+            minutes = remaining // 60
+            time_left = f"{minutes}m"
+        else:
+            hours = remaining // 3600
+            time_left = f"{hours}h"
 
-    hours, remainder = divmod(remaining, 3600)
-    minutes, seconds = divmod(remainder, 60)
-
-    if remaining < 60:
-        time_left = f"{seconds}s"
-    elif remaining < 3600:
-        time_left = f"{minutes}m"
+        embed.set_footer(
+            text=f"Resets in {time_left} • Europe/Stockholm"
+        )
     else:
-        time_left = f"{hours}h {minutes}m"
-
-    embed.set_footer(text=f"Reset in {time_left} - Europe/Stockholm (UTC+1/UTC+2 DST)")
+        embed.set_footer(text="Europe/Stockholm")
 
     await interaction.response.send_message(embed=embed)
+
 
 @bot.tree.command(name="setchannel")
 @app_commands.checks.has_permissions(manage_guild=True)
