@@ -139,6 +139,100 @@ def get_user_stats(user_id: int):
         "rank": rank
     }
 
+def calculate_streaks(user_id: int):
+    """
+    Returns (current_streak, best_streak)
+    Based on calendar days in Europe/Stockholm.
+    """
+
+    with db() as con:
+        rows = con.execute("""
+            SELECT rolled_at
+            FROM rolls
+            WHERE user_id = ?
+              AND actor_type = 'user'
+            ORDER BY rolled_at ASC
+        """, (user_id,)).fetchall()
+
+    if not rows:
+        return 0, 0
+
+    # Convert timestamps to unique local dates
+    dates = set()
+
+    for (ts,) in rows:
+        dt = datetime.fromtimestamp(ts, TZ)
+        dates.add(dt.date())
+
+    sorted_dates = sorted(dates)
+
+    best = 0
+    current_run = 0
+    prev_date = None
+
+    for d in sorted_dates:
+        if prev_date is None:
+            current_run = 1
+        elif d == prev_date + timedelta(days=1):
+            current_run += 1
+        else:
+            current_run = 1
+
+        best = max(best, current_run)
+        prev_date = d
+
+    # Calculate current streak (must include today)
+    today = datetime.now(TZ).date()
+
+    if today not in dates:
+        current = 0
+    else:
+        current = 1
+        check_day = today
+
+        while True:
+            check_day = check_day - timedelta(days=1)
+            if check_day in dates:
+                current += 1
+            else:
+                break
+
+    return current, best
+
+def get_period_stats(user_id: int, start_ts: int, end_ts: int):
+    with db() as con:
+        total = con.execute("""
+            SELECT COUNT(*), SUM(value), MAX(value)
+            FROM rolls
+            WHERE user_id = ?
+              AND actor_type = 'user'
+              AND rolled_at BETWEEN ? AND ?
+        """, (user_id, start_ts, end_ts)).fetchone()
+
+        rank = con.execute("""
+            SELECT COUNT(*) + 1
+            FROM (
+                SELECT user_id, SUM(value) AS score
+                FROM rolls
+                WHERE actor_type = 'user'
+                  AND rolled_at BETWEEN ? AND ?
+                GROUP BY user_id
+            )
+            WHERE score > (
+                SELECT SUM(value)
+                FROM rolls
+                WHERE user_id = ?
+                  AND actor_type = 'user'
+                  AND rolled_at BETWEEN ? AND ?
+            )
+        """, (start_ts, end_ts, user_id, start_ts, end_ts)).fetchone()[0]
+
+    return {
+        "rolls": total[0] or 0,
+        "score": total[1] or 0,
+        "best": total[2] or 0,
+        "rank": rank
+    }
 
 # ---------------- BOT SETUP ----------------
 
@@ -270,6 +364,21 @@ async def stats(
     stats = get_user_stats(target.id)
     start, end = today_range()
 
+    week_start = now = datetime.now(TZ)
+    week_start = week_start - timedelta(days=week_start.weekday())
+    week_start = datetime(week_start.year, week_start.month, week_start.day, tzinfo=TZ)
+    week_end = week_start + timedelta(days=7)
+
+    month_start = datetime(now.year, now.month, 1, tzinfo=TZ)
+    if now.month == 12:
+        month_end = datetime(now.year + 1, 1, 1, tzinfo=TZ)
+    else:
+        month_end = datetime(now.year, now.month + 1, 1, tzinfo=TZ)
+
+    week_stats = get_period_stats(target.id, int(week_start.timestamp()), int(week_end.timestamp()))
+    month_stats = get_period_stats(target.id, int(month_start.timestamp()), int(month_end.timestamp()))
+    current_streak, best_streak = calculate_streaks(target.id)
+
     with db() as con:
         today_row = con.execute(
             """
@@ -291,42 +400,75 @@ async def stats(
         return
 
     embed = discord.Embed(
-        title=f"Stats for {target.name}",
+        title="User Statistics",
         color=discord.Color.dark_gray()
     )
+
+    embed.set_thumbnail(url=target.display_avatar.url)
 
     embed.add_field(
         name="All-time",
         value=(
-            f"Total rolls: **{stats['rolls']}**\n"
-            f"Total score: **{stats['score']:,}**\n"
-            f"Global rank: **#{stats['rank']}**\n"
-            f"Best roll: **{stats['best']}**"
+            f"Rolls: {stats['rolls']}\n"
+            f"Score: {stats['score']:,}\n"
+            f"Rank: #{stats['rank']}\n"
+            f"Best: {stats['best']}"
         ),
-        inline=False
+        inline=True
+    )
+
+    embed.add_field(
+        name="Streaks",
+        value=(
+            f"Current: {current_streak}d\n"
+            f"Best: {best_streak}d"
+        ),
+        inline=True
+    )
+
+    embed.add_field(
+       name="This Week",
+        value=(
+            f"Rolls: {week_stats['rolls']}\n"
+            f"Score: {week_stats['score']:,}\n"
+            f"Rank: #{week_stats['rank']}\n"
+            f"Best: {week_stats['best']}"
+        ),
+        inline=True
+    )
+
+    embed.add_field(
+        name="This Month",
+        value=(
+            f"Rolls: {month_stats['rolls']}\n"
+            f"Score: {month_stats['score']:,}\n"
+            f"Rank: #{month_stats['rank']}\n"
+            f"Best: {month_stats['best']}"
+        ),
+        inline=True
     )
 
     if today_row:
-        embed.add_field(
-            name="Today",
-            value=f"Today's roll: **{today_row[0]}**",
-            inline=False
-        )
+        today_text = f"Today's roll: **{today_row[0]}**"
     else:
-        embed.add_field(
-            name="Today",
-            value="No roll yet today.",
-            inline=False
-        )
+        today_text = "No roll yet today."
+
+    embed.add_field(
+        name="Today",
+        value=today_text,
+        inline=True
+    )
 
     embed.add_field(
         name="Averages",
         value=(
-            f"All-time avg: **{stats['avg']:.1f}**\n"
-            f"Last 10 rolls avg: **{stats['avg10']:.1f}**"
+            f"All-time: {stats['avg']:.1f}\n"
+            f"Last 10: {stats['avg10']:.1f}"
         ),
-        inline=False
+        inline=True
     )
+
+    embed.set_footer(text="Europe/Stockholm")
 
     await interaction.response.send_message(embed=embed)
 
@@ -388,7 +530,7 @@ async def roll(interaction: discord.Interaction):
 
     value = secrets.randbelow(100) + 1
 
-    steps = secrets.randbelow(6)  # 0–6 
+    steps = secrets.randbelow(6)
 
     if steps == 0:
         upsert_user(interaction.user.id, interaction.user.name)
@@ -427,6 +569,7 @@ async def roll(interaction: discord.Interaction):
     app_commands.Choice(name="Month", value="month"),
     app_commands.Choice(name="Year", value="year"),
     app_commands.Choice(name="All Time", value="alltime"),
+    app_commands.Choice(name="Streak", value="streak"),
 ])
 async def leaderboards(
     interaction: discord.Interaction,
@@ -435,111 +578,162 @@ async def leaderboards(
     period_value = period.value if period else "today"
     now = datetime.now(TZ)
 
-    include_bot = period_value == "today"
+    rows = []
+    ranking = []
+    stats_row = (0, 0)
 
-    start_ts = None
-    end_ts = None
+    # =========================
+    # STREAK LEADERBOARD
+    # =========================
+    if period_value == "streak":
 
-    # ---- PERIOD LOGIC ----
-    if period_value == "today":
-        start = datetime(now.year, now.month, now.day, tzinfo=TZ)
-        end = start + timedelta(days=1)
-        start_ts = int(start.timestamp())
-        end_ts = int(end.timestamp())
-        title_suffix = f"Today — {now.strftime('%B %d')}"
+        with db() as con:
+            user_ids = con.execute("""
+                SELECT DISTINCT user_id
+                FROM rolls
+                WHERE actor_type = 'user'
+            """).fetchall()
 
-    elif period_value == "week":
-        start = now - timedelta(days=now.weekday())
-        start = datetime(start.year, start.month, start.day, tzinfo=TZ)
-        end = start + timedelta(days=7)
-        start_ts = int(start.timestamp())
-        end_ts = int(end.timestamp())
-        title_suffix = f"Week {now.isocalendar().week}"
+        streak_data = []
 
-    elif period_value == "month":
-        start = datetime(now.year, now.month, 1, tzinfo=TZ)
-        if now.month == 12:
+        for (uid,) in user_ids:
+            _, best = calculate_streaks(uid)
+            if best > 0:
+                streak_data.append((uid, best))
+
+        streak_data.sort(key=lambda x: x[1], reverse=True)
+
+        for uid, best in streak_data:
+            with db() as con:
+                row = con.execute(
+                    "SELECT username FROM users WHERE user_id = ?",
+                    (uid,)
+                ).fetchone()
+
+            username = row[0] if row else str(uid)
+            rows.append((username, best, uid))
+            ranking.append((uid, best))
+
+        rows = rows[:10]
+
+        title_suffix = "Longest Streaks — All Time"
+        stats_row = (len(streak_data), 0)
+
+    # =========================
+    # NORMAL PERIOD LEADERBOARDS
+    # =========================
+    else:
+
+        include_bot = period_value == "today"
+        actor_filter = "IN ('user','bot')" if include_bot else "= 'user'"
+
+        start_ts = None
+        end_ts = None
+
+        if period_value == "today":
+            start = datetime(now.year, now.month, now.day, tzinfo=TZ)
+            end = start + timedelta(days=1)
+            start_ts = int(start.timestamp())
+            end_ts = int(end.timestamp())
+            title_suffix = f"Today — {now.strftime('%B %d')}"
+
+        elif period_value == "week":
+            start = now - timedelta(days=now.weekday())
+            start = datetime(start.year, start.month, start.day, tzinfo=TZ)
+            end = start + timedelta(days=7)
+            start_ts = int(start.timestamp())
+            end_ts = int(end.timestamp())
+            title_suffix = f"Week {now.isocalendar().week}"
+
+        elif period_value == "month":
+            start = datetime(now.year, now.month, 1, tzinfo=TZ)
+            if now.month == 12:
+                end = datetime(now.year + 1, 1, 1, tzinfo=TZ)
+            else:
+                end = datetime(now.year, now.month + 1, 1, tzinfo=TZ)
+            start_ts = int(start.timestamp())
+            end_ts = int(end.timestamp())
+            title_suffix = f"{now.strftime('%B')} {now.year}"
+
+        elif period_value == "year":
+            start = datetime(now.year, 1, 1, tzinfo=TZ)
             end = datetime(now.year + 1, 1, 1, tzinfo=TZ)
-        else:
-            end = datetime(now.year, now.month + 1, 1, tzinfo=TZ)
-        start_ts = int(start.timestamp())
-        end_ts = int(end.timestamp())
-        title_suffix = f"{now.strftime('%B')} {now.year}"
+            start_ts = int(start.timestamp())
+            end_ts = int(end.timestamp())
+            title_suffix = f"{now.year}"
 
-    elif period_value == "year":
-        start = datetime(now.year, 1, 1, tzinfo=TZ)
-        end = datetime(now.year + 1, 1, 1, tzinfo=TZ)
-        start_ts = int(start.timestamp())
-        end_ts = int(end.timestamp())
-        title_suffix = f"{now.year}"
+        elif period_value == "alltime":
+            title_suffix = "All Time"
 
-    elif period_value == "alltime":
-        title_suffix = "All Time"
+        with db() as con:
 
-    actor_filter = "IN ('user','bot')" if include_bot else "= 'user'"
+            if period_value == "alltime":
 
-    with db() as con:
+                rows = con.execute(f"""
+                    SELECT COALESCE(u.username, r.username), SUM(r.value), r.user_id
+                    FROM rolls r
+                    LEFT JOIN users u ON u.user_id = r.user_id
+                    WHERE r.actor_type {actor_filter}
+                    GROUP BY r.user_id
+                    ORDER BY SUM(r.value) DESC
+                    LIMIT 10
+                """).fetchall()
 
-        if period_value == "alltime":
-            rows = con.execute(f"""
-                SELECT COALESCE(u.username, r.username), SUM(r.value), r.user_id
-                FROM rolls r
-                LEFT JOIN users u ON u.user_id = r.user_id
-                WHERE r.actor_type {actor_filter}
-                GROUP BY r.user_id
-                ORDER BY SUM(r.value) DESC
-                LIMIT 10
-            """).fetchall()
+                ranking = con.execute(f"""
+                    SELECT r.user_id, SUM(r.value)
+                    FROM rolls r
+                    WHERE r.actor_type {actor_filter}
+                    GROUP BY r.user_id
+                    ORDER BY SUM(r.value) DESC
+                """).fetchall()
 
-            ranking = con.execute(f"""
-                SELECT r.user_id, SUM(r.value)
-                FROM rolls r
-                WHERE r.actor_type {actor_filter}
-                GROUP BY r.user_id
-                ORDER BY SUM(r.value) DESC
-            """).fetchall()
+                stats_row = con.execute(f"""
+                    SELECT COUNT(DISTINCT user_id), COUNT(*)
+                    FROM rolls
+                    WHERE actor_type {actor_filter}
+                """).fetchone()
 
-            stats_row = con.execute(f"""
-                SELECT COUNT(DISTINCT user_id), COUNT(*)
-                FROM rolls
-                WHERE actor_type {actor_filter}
-            """).fetchone()
+            else:
 
-        else:
-            aggregate = "MAX(r.value)" if period_value == "today" else "SUM(r.value)"
+                aggregate = "MAX(r.value)" if period_value == "today" else "SUM(r.value)"
 
-            rows = con.execute(f"""
-                SELECT COALESCE(u.username, r.username), {aggregate}, r.user_id
-                FROM rolls r
-                LEFT JOIN users u ON u.user_id = r.user_id
-                WHERE r.rolled_at BETWEEN ? AND ?
-                  AND r.actor_type {actor_filter}
-                GROUP BY r.user_id
-                ORDER BY {aggregate} DESC
-                LIMIT 10
-            """, (start_ts, end_ts)).fetchall()
+                rows = con.execute(f"""
+                    SELECT COALESCE(u.username, r.username), {aggregate}, r.user_id
+                    FROM rolls r
+                    LEFT JOIN users u ON u.user_id = r.user_id
+                    WHERE r.rolled_at BETWEEN ? AND ?
+                      AND r.actor_type {actor_filter}
+                    GROUP BY r.user_id
+                    ORDER BY {aggregate} DESC
+                    LIMIT 10
+                """, (start_ts, end_ts)).fetchall()
 
-            ranking = con.execute(f"""
-                SELECT r.user_id, {aggregate}
-                FROM rolls r
-                WHERE r.rolled_at BETWEEN ? AND ?
-                  AND r.actor_type {actor_filter}
-                GROUP BY r.user_id
-                ORDER BY {aggregate} DESC
-            """, (start_ts, end_ts)).fetchall()
+                ranking = con.execute(f"""
+                    SELECT r.user_id, {aggregate}
+                    FROM rolls r
+                    WHERE r.rolled_at BETWEEN ? AND ?
+                      AND r.actor_type {actor_filter}
+                    GROUP BY r.user_id
+                    ORDER BY {aggregate} DESC
+                """, (start_ts, end_ts)).fetchall()
 
-            stats_row = con.execute(f"""
-                SELECT COUNT(DISTINCT user_id), COUNT(*)
-                FROM rolls
-                WHERE rolled_at BETWEEN ? AND ?
-                  AND actor_type {actor_filter}
-            """, (start_ts, end_ts)).fetchone()
+                stats_row = con.execute(f"""
+                    SELECT COUNT(DISTINCT user_id), COUNT(*)
+                    FROM rolls
+                    WHERE rolled_at BETWEEN ? AND ?
+                      AND actor_type {actor_filter}
+                """, (start_ts, end_ts)).fetchone()
+
+    # =========================
+    # RENDER (COMMON)
+    # =========================
 
     embed = discord.Embed(title="Leaderboards")
 
-    # ---- TABLE ----
+    column_label = "DAYS" if period_value == "streak" else "SCORE"
+
     lines = []
-    header = f"{'#':<3} {'USER':<16} {'SCORE':>10}"
+    header = f"{'#':<3} {'USER':<16} {column_label:>10}"
     lines.append(header)
     lines.append("-" * len(header))
 
@@ -565,17 +759,22 @@ async def leaderboards(
         inline=False
     )
 
-    # ---- PARTICIPATION STATS ----
     players_count = stats_row[0] or 0
     rolls_count = stats_row[1] or 0
 
-    embed.add_field(
-        name="Statistics",
-        value=f"Users: {players_count}\nRolls: {rolls_count}",
-        inline=False
-    )
+    if period_value == "streak":
+        embed.add_field(
+            name="Statistics",
+            value=f"Users with streaks: {players_count}",
+            inline=False
+        )
+    else:
+        embed.add_field(
+            name="Statistics",
+            value=f"Users: {players_count}\nRolls: {rolls_count}",
+            inline=False
+        )
 
-    # ---- USER POSITION ----
     user_rank = None
     user_score = None
 
@@ -594,7 +793,6 @@ async def leaderboards(
             inline=False
         )
 
-    # ---- RESET TIMER (ONLY TODAY) ----
     if period_value == "today":
         midnight = datetime(now.year, now.month, now.day, tzinfo=TZ) + timedelta(days=1)
         remaining = max(0, int((midnight - now).total_seconds()))
@@ -615,7 +813,6 @@ async def leaderboards(
         embed.set_footer(text="Europe/Stockholm")
 
     await interaction.response.send_message(embed=embed)
-
 
 @bot.tree.command(name="setchannel")
 @app_commands.checks.has_permissions(manage_guild=True)
