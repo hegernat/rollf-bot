@@ -3,9 +3,13 @@
 RollF is a Discord bot that posts one daily roll and tracks leaderboards.
 
 ## Features
-- One roll per user per day
+
+- One roll per user per day (calendar-based, Europe/Stockholm)
 - Automatic daily bot roll
 - Period-based leaderboards (Today, Week, Month, Year, All Time)
+- Global streak system (current & best streak tracking)
+- Longest streak leaderboard
+- Personal stats dashboard (all-time, week, month, averages)
 - Persistent SQLite storage
 
 ## Try RollF
@@ -32,4 +36,3 @@ Run the bot:
 ```
 python rollf.py
 ```
-
