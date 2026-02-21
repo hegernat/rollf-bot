@@ -1,6 +1,6 @@
 # RollF 🎲
 
-RollF is a Discord bot that posts one daily roll and tracks leaderboards.
+RollF is a minimalist Discord bot built around one daily roll, global leaderboards, and long-term streak tracking.
 
 ## Features
 
