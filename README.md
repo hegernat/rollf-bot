@@ -12,6 +12,10 @@ RollF is a minimalist Discord bot built around one daily roll, global leaderboar
 - Personal stats dashboard (all-time, week, month, averages)
 - Persistent SQLite storage
 
+### Example Roll
+
+![Roll Demo](https://raw.githubusercontent.com/hegernat/rollf-bot/main/assets/roll-example.gif)
+
 ## Try RollF
 
 You can invite the live instance of RollF to your server:
