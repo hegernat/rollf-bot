@@ -392,6 +392,24 @@ async def stats(
             (target.id, start, end)
         ).fetchone()
 
+    today_rank = None
+
+    if today_row:
+        with db() as con:
+            ranking_today = con.execute("""
+                SELECT user_id, MAX(value) AS score
+                FROM rolls
+                WHERE actor_type = 'user'
+                  AND rolled_at BETWEEN ? AND ?
+                GROUP BY user_id
+                ORDER BY score DESC
+            """, (start, end)).fetchall()
+
+        for index, (uid, _) in enumerate(ranking_today, start=1):
+            if uid == target.id:
+                today_rank = index
+                break
+
     if stats["rolls"] == 0:
         await interaction.response.send_message(
             "No statistics exists for this user.",
@@ -400,20 +418,25 @@ async def stats(
         return
 
     embed = discord.Embed(
-        title="User Statistics",
+        title=f"{target.name} Statistics",
         color=discord.Color.dark_gray()
     )
 
     embed.set_thumbnail(url=target.display_avatar.url)
 
+    # Row 1
+    if today_row:
+        today_value = (
+            f"Roll: {today_row[0]}\n"
+            f"Rank: #{today_rank}" if today_rank else
+            f"Roll: {today_row[0]}"
+        )
+    else:
+        today_value = "No roll yet."
+
     embed.add_field(
-        name="All-time",
-        value=(
-            f"Rolls: {stats['rolls']}\n"
-            f"Score: {stats['score']:,}\n"
-            f"Rank: #{stats['rank']}\n"
-            f"Best: {stats['best']}"
-        ),
+        name="Today",
+        value=today_value,
         inline=True
     )
 
@@ -426,39 +449,7 @@ async def stats(
         inline=True
     )
 
-    embed.add_field(
-       name="This Week",
-        value=(
-            f"Rolls: {week_stats['rolls']}\n"
-            f"Score: {week_stats['score']:,}\n"
-            f"Rank: #{week_stats['rank']}\n"
-            f"Best: {week_stats['best']}"
-        ),
-        inline=True
-    )
-
-    embed.add_field(
-        name="This Month",
-        value=(
-            f"Rolls: {month_stats['rolls']}\n"
-            f"Score: {month_stats['score']:,}\n"
-            f"Rank: #{month_stats['rank']}\n"
-            f"Best: {month_stats['best']}"
-        ),
-        inline=True
-    )
-
-    if today_row:
-        today_text = f"Today's roll: **{today_row[0]}**"
-    else:
-        today_text = "No roll yet today."
-
-    embed.add_field(
-        name="Today",
-        value=today_text,
-        inline=True
-    )
-
+    # Row 2
     embed.add_field(
         name="Averages",
         value=(
@@ -468,7 +459,37 @@ async def stats(
         inline=True
     )
 
-    embed.set_footer(text="Europe/Stockholm")
+    embed.add_field(
+        name="This Week",
+        value=(
+            f"Rolls: {week_stats['rolls']}\n"
+            f"Score: {week_stats['score']:,}\n"
+            f"Rank: #{week_stats['rank']}"
+        ),
+        inline=True
+    )
+
+    # Row 3
+    embed.add_field(
+        name="This Month",
+        value=(
+            f"Rolls: {month_stats['rolls']}\n"
+            f"Score: {month_stats['score']:,}\n"
+            f"Rank: #{month_stats['rank']}"
+        ),
+        inline=True
+    )
+
+    embed.add_field(
+        name="All-time",
+        value=(
+            f"Rolls: {stats['rolls']}\n"
+            f"Score: {stats['score']:,}\n"
+            f"Rank: #{stats['rank']}\n"
+            f"Best: {stats['best']}"
+        ),
+        inline=True
+    )
 
     await interaction.response.send_message(embed=embed)
 
