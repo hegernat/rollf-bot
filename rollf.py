@@ -282,17 +282,25 @@ async def on_guild_remove(guild: discord.Guild):
 @bot.event
 async def on_ready():
     await bot.tree.sync()
-    with db() as con:
-        db_guilds = con.execute(
-            "SELECT guild_id FROM guild_channels"
-        ).fetchall()
-
     current_ids = {g.id for g in bot.guilds}
+    with db() as con:
+        db_guilds = con.execute("""
+            SELECT guild_id FROM guild_channels
+            UNION
+            SELECT guild_id FROM guild_meta
+        """).fetchall()
 
-    for (gid,) in db_guilds:
-        if gid not in current_ids:
-            con.execute("DELETE FROM guild_channels WHERE guild_id = ?", (gid,))
-            con.execute("DELETE FROM guild_meta WHERE guild_id = ?", (gid,))
+        cleaned = 0
+
+        for (gid,) in db_guilds:
+            if gid not in current_ids:
+                con.execute("DELETE FROM guild_channels WHERE guild_id = ?", (gid,))
+                con.execute("DELETE FROM guild_meta WHERE guild_id = ?", (gid,))
+                cleaned += 1
+
+    if cleaned > 0:
+        print(f"Cleaned {cleaned} stale guild entries")
+
     bot.loop.create_task(bot_daily_roll())
     print(f"{BOT_NAME} online & commands synced")
 
