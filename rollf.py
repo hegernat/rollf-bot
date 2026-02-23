@@ -273,10 +273,26 @@ async def on_guild_join(guild: discord.Guild):
     except discord.Forbidden:
         pass  # Shouldn't happen, but stay silent
 
+@bot.event
+async def on_guild_remove(guild: discord.Guild):
+    with db() as con:
+        con.execute("DELETE FROM guild_channels WHERE guild_id = ?", (guild.id,))
+        con.execute("DELETE FROM guild_meta WHERE guild_id = ?", (guild.id,))
 
 @bot.event
 async def on_ready():
     await bot.tree.sync()
+    with db() as con:
+        db_guilds = con.execute(
+            "SELECT guild_id FROM guild_channels"
+        ).fetchall()
+
+    current_ids = {g.id for g in bot.guilds}
+
+    for (gid,) in db_guilds:
+        if gid not in current_ids:
+            con.execute("DELETE FROM guild_channels WHERE guild_id = ?", (gid,))
+            con.execute("DELETE FROM guild_meta WHERE guild_id = ?", (gid,))
     bot.loop.create_task(bot_daily_roll())
     print(f"{BOT_NAME} online & commands synced")
 
