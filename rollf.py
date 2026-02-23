@@ -464,7 +464,8 @@ async def stats(
         value=(
             f"Rolls: {week_stats['rolls']}\n"
             f"Score: {week_stats['score']:,}\n"
-            f"Rank: #{week_stats['rank']}"
+            f"Rank: #{week_stats['rank']}\n"
+            f"Best: {week_stats['best']}"
         ),
         inline=True
     )
@@ -475,7 +476,8 @@ async def stats(
         value=(
             f"Rolls: {month_stats['rolls']}\n"
             f"Score: {month_stats['score']:,}\n"
-            f"Rank: #{month_stats['rank']}"
+            f"Rank: #{month_stats['rank']}\n"
+            f"Best: {month_stats['best']}"
         ),
         inline=True
     )
@@ -531,15 +533,23 @@ async def roll(interaction: discord.Interaction):
         midnight = datetime(now.year, now.month, now.day, tzinfo=TZ) + timedelta(days=1)
         remaining = max(0, int((midnight - now).total_seconds()))
 
-        hours, remainder = divmod(remaining, 3600)
-        minutes, seconds = divmod(remainder, 60)
-
-        if remaining < 60:
-            time_left = f"{seconds}s"
-        elif remaining < 3600:
+        if remaining < 3600:
+            # under 1h → ceil minutes
+            minutes = -(-remaining // 60)
             time_left = f"{minutes}m"
+
         else:
-            time_left = f"{hours}h {minutes}m"
+            hours = remaining // 3600
+            minutes = -(- (remaining % 3600) // 60)
+
+            if minutes == 60:
+                hours += 1
+                minutes = 0
+
+            if minutes == 0:
+                time_left = f"{hours}h"
+            else:
+                time_left = f"{hours}h {minutes}m"
 
         await interaction.response.send_message(
             f"{interaction.user.mention}\n"
@@ -576,11 +586,24 @@ async def roll(interaction: discord.Interaction):
         )
         await asyncio.sleep(0.35)
 
+    # Final result after animation
     upsert_user(interaction.user.id, interaction.user.name)
     insert_roll(interaction.user.id, interaction.user.name, value, "user")
-    await msg.edit(
-        content=f"{interaction.user.mention} rolled **{value}** 🎲"
-    )
+
+    current_streak, _ = calculate_streaks(interaction.user.id)
+    milestones = {10, 100, 500, 1000}
+
+    if current_streak in milestones:
+        await msg.edit(
+            content=(
+                f"{interaction.user.mention} rolled **{value}** 🎲\n"
+                f"🔥 {current_streak}-day streak achieved."
+            )
+        )
+    else:
+        await msg.edit(
+            content=f"{interaction.user.mention} rolled **{value}** 🎲"
+        )
 
 @bot.tree.command(name="leaderboards")
 @app_commands.describe(period="Select leaderboard period")
@@ -814,25 +837,47 @@ async def leaderboards(
             inline=False
         )
 
-    if period_value == "today":
-        midnight = datetime(now.year, now.month, now.day, tzinfo=TZ) + timedelta(days=1)
-        remaining = max(0, int((midnight - now).total_seconds()))
+    # =========================
+    # RESET TIMER
+    # =========================
 
-        if remaining < 60:
-            time_left = "0m"
-        elif remaining < 3600:
-            minutes = remaining // 60
+    reset_text = "Europe/Stockholm (CET/CEST)"
+
+    if period_value in ("today", "week", "month"):
+        if period_value == "today":
+            reset_point = datetime(now.year, now.month, now.day, tzinfo=TZ) + timedelta(days=1)
+
+        elif period_value == "week":
+            start = now - timedelta(days=now.weekday())
+            start = datetime(start.year, start.month, start.day, tzinfo=TZ)
+            reset_point = start + timedelta(days=7)
+
+        elif period_value == "month":
+            if now.month == 12:
+                reset_point = datetime(now.year + 1, 1, 1, tzinfo=TZ)
+            else:
+                reset_point = datetime(now.year, now.month + 1, 1, tzinfo=TZ)
+
+        remaining = max(0, int((reset_point - now).total_seconds()))
+
+        if remaining < 3600:
+            # under 1 hour → minutes only
+            minutes = -(-remaining // 60)
             time_left = f"{minutes}m"
-        else:
+
+        elif remaining < 86400:
+            # under 24h → hours only
             hours = remaining // 3600
             time_left = f"{hours}h"
 
-        embed.set_footer(
-            text=f"Resets in {time_left} • Europe/Stockholm"
-        )
-    else:
-        embed.set_footer(text="Europe/Stockholm")
+        else:
+            # 1+ days → days only
+            days = remaining // 86400
+            time_left = f"{days}d"
 
+        reset_text = f"Resets in {time_left} • Europe/Stockholm (CET/CEST)"
+
+    embed.set_footer(text=reset_text)
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="setchannel")
