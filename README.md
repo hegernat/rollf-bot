@@ -34,14 +34,20 @@ Just a daily number and some competition.
 
 ---
 
-
 ## Commands
+
+Public:
 
 - `/roll` – Roll your daily number
 - `/leaderboards` – View period-based rankings
 - `/stats` – View detailed statistics
 - `/setchannel` – Configure daily bot roll channel (admin)
 - `/help` – Show setup information (admin)
+
+Owner-only (optional, requires ADMIN_MODE=true):
+
+- `/undo` – Delete latest roll for a user
+- `/export` – Export guild & global bot statistics (CSV)
 
 ---
 
@@ -71,9 +77,39 @@ pip install -r requirements.txt
 Create a .env file in the project root:
 ```
 DISCORD_TOKEN=your_token_here
+ADMIN_MODE=true
+OWNER_ID=your_user_id_here
+ADMIN_GUILD_ID=your_server_id_here
 ```
 
 Run the bot:
 ```
 python rollf.py
 ```
+---
+
+## Admin Mode (Optional)
+
+RollF supports an optional admin mode for maintenance tasks.
+
+Admin commands are:
+
+- Only registered if `ADMIN_MODE=true`
+- Restricted to `ADMIN_GUILD_ID`
+- Usable only by `OWNER_ID`
+
+If `ADMIN_MODE=false`, admin commands are not registered at all.
+
+Example `.env`:
+
+---
+
+## Production Notes
+
+- Designed for long-term unattended operation
+- Uses SQLite (WAL mode recommended)
+- Compatible with systemd service deployment
+- Supports automated compressed database backups
+
+The bot is intentionally minimal and avoids complex state mutations.
+All statistics are derived directly from stored roll history.

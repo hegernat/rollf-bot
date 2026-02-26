@@ -5,6 +5,8 @@ import time
 import random
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+import csv
+import io
 import os
 import discord
 from discord import app_commands
@@ -18,6 +20,12 @@ BOT_NAME = "RollF"
 DB_PATH = "bot.db"
 
 load_dotenv()
+
+# ---------------- ADMIN ----------------
+
+ADMIN_MODE = os.getenv("ADMIN_MODE") == "true"
+OWNER_ID = int(os.getenv("OWNER_ID", "0"))
+ADMIN_GUILD_ID = int(os.getenv("ADMIN_GUILD_ID", "0"))
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 ONBOARDING_TEXT = (
@@ -281,8 +289,36 @@ async def on_guild_remove(guild: discord.Guild):
 
 @bot.event
 async def on_ready():
-    await bot.tree.sync()
+
+    print(f"{BOT_NAME} logging in...")
+    print("Connected guilds:", [g.id for g in bot.guilds])
+    print("ADMIN_GUILD_ID:", ADMIN_GUILD_ID)
+
+    # -------- Global command sync --------
+    try:
+        await bot.tree.sync()
+        print("Global commands synced.")
+    except Exception as e:
+        print("Global sync failed:", e)
+
+    # -------- Admin guild sync (safe) --------
+    if ADMIN_MODE and ADMIN_GUILD_ID:
+        guild_obj = bot.get_guild(ADMIN_GUILD_ID)
+
+        if guild_obj:
+            try:
+                await bot.tree.sync(guild=guild_obj)
+                print("Admin guild commands synced.")
+            except discord.Forbidden:
+                print("Admin guild sync failed: Missing Access")
+            except Exception as e:
+                print("Admin guild sync error:", e)
+        else:
+            print("Admin guild not found in bot.guilds")
+
+    # -------- Cleanup stale guilds --------
     current_ids = {g.id for g in bot.guilds}
+
     with db() as con:
         db_guilds = con.execute("""
             SELECT guild_id FROM guild_channels
@@ -301,8 +337,10 @@ async def on_ready():
     if cleaned > 0:
         print(f"Cleaned {cleaned} stale guild entries")
 
+    # -------- Start daily roll task --------
     bot.loop.create_task(bot_daily_roll())
-    print(f"{BOT_NAME} online & commands synced")
+
+    print(f"{BOT_NAME} online & ready.")
 
 # ---------------- DAILY BOT ROLL ----------------
 
@@ -379,7 +417,10 @@ async def bot_daily_roll():
 
 # ---------------- COMMANDS ----------------
 
-@bot.tree.command(name="stats")
+@bot.tree.command(
+    name="stats",
+    description="View detailed statistics for yourself or another user"
+)
 async def stats(
     interaction: discord.Interaction,
     user: discord.User | None = None
@@ -519,7 +560,10 @@ async def stats(
 
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="help")
+@bot.tree.command(
+    name="help",
+    description="Show setup instructions"
+)
 async def help_cmd(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.manage_guild:
         await interaction.response.send_message(
@@ -533,7 +577,10 @@ async def help_cmd(interaction: discord.Interaction):
         ephemeral=True
     )
 
-@bot.tree.command(name="roll")
+@bot.tree.command(
+    name="roll",
+    description="Roll a number between 1 and 100 (once per day)"
+)
 async def roll(interaction: discord.Interaction):
     start, end = today_range()
 
@@ -629,7 +676,10 @@ async def roll(interaction: discord.Interaction):
             content=f"{interaction.user.mention} rolled **{value}** 🎲"
         )
 
-@bot.tree.command(name="leaderboards")
+@bot.tree.command(
+    name="leaderboards",
+    description="View leaderboards for different periods"
+)
 @app_commands.describe(period="Select leaderboard period")
 @app_commands.choices(period=[
     app_commands.Choice(name="Today", value="today"),
@@ -912,7 +962,10 @@ async def leaderboards(
     embed.set_footer(text=reset_text)
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="setchannel")
+@bot.tree.command(
+    name="setchannel",
+    description="Set the channel for daily automatic rolls"
+)
 @app_commands.checks.has_permissions(manage_guild=True)
 async def setchannel(interaction: discord.Interaction, channel: discord.TextChannel):
     with db() as con:
@@ -928,6 +981,140 @@ async def setchannel(interaction: discord.Interaction, channel: discord.TextChan
         f"Daily rolls will be posted in {channel.mention}",
         ephemeral=True
     )
-    
+
+# ---------------- ADMIN COMMANDS ----------------
+
+if ADMIN_MODE:
+
+    @bot.tree.command(
+        name="export",
+        description="Owner-only export",
+        guild=discord.Object(id=ADMIN_GUILD_ID)
+    )
+    async def export_admin(interaction: discord.Interaction):
+
+        if interaction.user.id != OWNER_ID:
+            await interaction.response.send_message("No.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        # ========================
+        # GUILD DATA
+        # ========================
+        guild_buffer = io.StringIO()
+        guild_writer = csv.writer(guild_buffer)
+
+        guild_writer.writerow(["guild_id", "guild_name", "member_count"])
+
+        for g in bot.guilds:
+            guild_writer.writerow([g.id, g.name, g.member_count])
+
+        guild_file = discord.File(
+            io.BytesIO(guild_buffer.getvalue().encode()),
+            filename="guilds.csv"
+        )
+
+        # ========================
+        # GLOBAL BOT STATS
+        # ========================
+        with db() as con:
+            total_users, total_rolls = con.execute("""
+                SELECT COUNT(DISTINCT user_id), COUNT(*)
+                FROM rolls
+                WHERE actor_type = 'user'
+            """).fetchone()
+
+            total_bot_rolls = con.execute("""
+                SELECT COUNT(*)
+                FROM rolls
+                WHERE actor_type = 'bot'
+            """).fetchone()[0]
+
+        stats_buffer = io.StringIO()
+        stats_writer = csv.writer(stats_buffer)
+
+        stats_writer.writerow(["metric", "value"])
+        stats_writer.writerow(["guilds", len(bot.guilds)])
+        stats_writer.writerow(["users", total_users or 0])
+        stats_writer.writerow(["user_rolls", total_rolls or 0])
+        stats_writer.writerow(["bot_rolls", total_bot_rolls or 0])
+
+        stats_file = discord.File(
+            io.BytesIO(stats_buffer.getvalue().encode()),
+            filename="bot_stats.csv"
+        )
+
+        await interaction.followup.send(
+            content="Admin export:",
+            files=[guild_file, stats_file],
+            ephemeral=True
+        )
+
+
+    @bot.tree.command(
+        name="undo",
+        description="Delete latest roll for a user",
+        guild=discord.Object(id=ADMIN_GUILD_ID)
+    )
+    async def undo_last_roll(
+        interaction: discord.Interaction,
+        user: discord.User | None = None,
+        user_id: str | None = None
+    ):
+
+        if interaction.user.id != OWNER_ID:
+            await interaction.response.send_message("No.", ephemeral=True)
+            return
+
+        target_id = None
+
+        if user:
+            target_id = user.id
+        elif user_id:
+            if not user_id.isdigit():
+                await interaction.response.send_message("Invalid user_id.", ephemeral=True)
+                return
+            target_id = int(user_id)
+        else:
+            await interaction.response.send_message(
+                "Provide a user or user_id.",
+                ephemeral=True
+            )
+            return
+
+        with db() as con:
+            row = con.execute("""
+                SELECT rowid, value, rolled_at
+                FROM rolls
+                WHERE user_id = ?
+                  AND actor_type = 'user'
+                ORDER BY rolled_at DESC
+                LIMIT 1
+            """, (target_id,)).fetchone()
+
+            if not row:
+                await interaction.response.send_message(
+                    "User has no rolls.",
+                    ephemeral=True
+                )
+                return
+
+            rowid, value, ts = row
+
+            con.execute(
+                "DELETE FROM rolls WHERE rowid = ?",
+                (rowid,)
+            )
+
+        dt = datetime.fromtimestamp(ts, TZ)
+
+        await interaction.response.send_message(
+            f"Deleted roll {value} "
+            f"({dt.strftime('%Y-%m-%d %H:%M')}) "
+            f"for user_id {target_id}",
+            ephemeral=True
+        )
+
 # ---------------- RUN ----------------
 bot.run(TOKEN)
