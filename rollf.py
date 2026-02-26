@@ -829,17 +829,25 @@ async def leaderboards(
 
     players_count = stats_row[0] or 0
     rolls_count = stats_row[1] or 0
+    guild_count = len(bot.guilds)
 
     if period_value == "streak":
         embed.add_field(
             name="Statistics",
-            value=f"Users with streaks: {players_count}",
+            value=(
+                f"Users with streaks: {players_count}\n"
+                f"Guilds: {guild_count}"
+            ),
             inline=False
         )
     else:
         embed.add_field(
             name="Statistics",
-            value=f"Users: {players_count}\nRolls: {rolls_count}",
+            value=(
+                f"Users: {players_count}\n"
+                f"Rolls: {rolls_count}\n"
+                f"Guilds: {guild_count}"
+            ),
             inline=False
         )
 
@@ -899,7 +907,7 @@ async def leaderboards(
             days = remaining // 86400
             time_left = f"{days}d"
 
-        reset_text = f"Resets in {time_left} • Europe/Stockholm (CET/CEST)"
+        reset_text = f"Next reset in {time_left} • Europe/Stockholm (CET/CEST)"
 
     embed.set_footer(text=reset_text)
     await interaction.response.send_message(embed=embed)
