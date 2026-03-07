@@ -136,7 +136,8 @@ Example `.env`:
 DISCORD_TOKEN=your_token_here
 ADMIN_MODE=true
 OWNER_ID=your_user_id_here
-ADMIN_GUILD_ID=your_server_id_here```
+ADMIN_GUILD_ID=your_server_id_here
+```
 
 ---
 
