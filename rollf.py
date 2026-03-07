@@ -994,7 +994,7 @@ async def leaderboards(
     top_ids = [uid for _, _, uid in rows]
 
     if user_rank and interaction.user.id not in top_ids:
-        if delta:
+        if delta is not None:
             text = f"#{user_rank} — {user_score:,}\n↥ {delta:,} to #{user_rank-1}"
         else:
             text = f"#{user_rank} — {user_score:,}"
