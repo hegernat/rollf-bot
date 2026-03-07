@@ -1,13 +1,23 @@
 # RollF 🎲
 
+![License](https://img.shields.io/badge/license-MIT-green)
+![Version](https://img.shields.io/github/v/release/hegernat/rollf-bot)
+![Discord Bot](https://img.shields.io/badge/bot-live-blue)
+
+[![Invite RollF](https://img.shields.io/badge/Invite-RollF-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.com/oauth2/authorize?client_id=1409207722783543347&permissions=2147568640&integration_type=0&scope=bot+applications.commands)
+
 RollF is a minimal daily roll Discord bot built around one simple idea:
 
-Everyone gets exactly one roll per day (1–100).
+Everyone gets exactly **one roll per day** (1–100).
 
-No rerolls. No economy. No gambling mechanics.
+No rerolls.  
+No economy.  
+No gambling mechanics.
+
 Just a daily number and some competition.
 
 RollF is the official public instance operated by the original author.
+The source code for the bot is available here on GitHub.
 ---
 
 ## Features
@@ -24,7 +34,6 @@ RollF is the official public instance operated by the original author.
   - All Time
   - Longest Streaks
 - Leaderboard position delta (distance to next rank)
-- Leaderboard rank comparison (points to next position)
 - Streak tracking (current and best)
 - Streak milestone notifications (10 / 100 / 500 / 1000 days)
 - Detailed user statistics:
@@ -32,6 +41,7 @@ RollF is the official public instance operated by the original author.
   - Best roll
   - Averages
   - Period breakdown (week & month)
+- Special display for perfect roll (💯)
 - Reset timers for active periods
 - Persistent SQLite storage
 - Automated compressed weekly database backups (180-day retention)
@@ -67,11 +77,23 @@ Owner-only (optional, requires ADMIN_MODE=true):
 
 ## Try RollF
 
-You can invite the live instance of RollF to your server:
+Use the invite button at the top of this page to add RollF to your server.
 
-➜ https://discord.com/oauth2/authorize?client_id=1409207722783543347&permissions=2147568640&integration_type=0&scope=bot+applications.commands
+RollF is also available on top.gg:
+https://top.gg/bot/1409207722783543347
 
-Note: this is my personal & official instance that's also available through top.gg
+---
+
+## Requirements
+
+For RollF to function correctly, the bot needs permission to:
+
+- Send messages
+- Embed links
+- Read message history
+- Use slash commands
+
+Daily bot rolls are posted in the configured channel using `/setchannel`.
 
 ---
 
@@ -124,15 +146,6 @@ including backfilling roll_date for historical roll records.
 
 The bot is intentionally minimal and avoids complex state mutations.
 All statistics are derived directly from stored roll history.
-
----
-
-### Database
-
-RollF uses SQLite in WAL mode for safe concurrent reads and writes.
-
-Schema migrations are handled automatically on startup,
-including historical backfilling of roll dates.
 
 ---
 
