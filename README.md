@@ -15,6 +15,7 @@ RollF is the official public instance operated by the original author.
 - One roll per user per calendar day (Europe/Stockholm)
 - Roll range: 1–100
 - Automatic daily bot roll
+- Global cross-server leaderboards
 - Period-based leaderboards:
   - Today
   - Week
@@ -22,7 +23,7 @@ RollF is the official public instance operated by the original author.
   - Year
   - All Time
   - Longest Streaks
-- Global cross-server leaderboards
+- Leaderboard position delta (distance to next rank)
 - Leaderboard rank comparison (points to next position)
 - Streak tracking (current and best)
 - Streak milestone notifications (10 / 100 / 500 / 1000 days)
@@ -117,6 +118,9 @@ Example `.env`:
 - Uses SQLite (WAL mode recommended)
 - Compatible with systemd service deployment
 - Supports automated compressed database backups
+
+RollF performs automatic schema migrations on startup,
+including backfilling roll_date for historical roll records.
 
 The bot is intentionally minimal and avoids complex state mutations.
 All statistics are derived directly from stored roll history.
