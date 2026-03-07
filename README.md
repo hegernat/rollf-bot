@@ -106,7 +106,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 Create a .env file in the project root:
-```
+```env
 DISCORD_TOKEN=your_token_here
 ADMIN_MODE=true
 OWNER_ID=your_user_id_here
@@ -134,7 +134,7 @@ If `ADMIN_MODE=false`, admin commands are not registered at all.
 Example `.env`:
 ```env
 DISCORD_TOKEN=your_token_here
-ADMIN_MODE=true
+ADMIN_MODE=false
 OWNER_ID=your_user_id_here
 ADMIN_GUILD_ID=your_server_id_here
 ```
