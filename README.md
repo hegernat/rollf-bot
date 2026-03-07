@@ -7,6 +7,7 @@ Everyone gets exactly one roll per day (1–100).
 No rerolls. No economy. No gambling mechanics.
 Just a daily number and some competition.
 
+RollF is the official public instance operated by the original author.
 ---
 
 ## Features
@@ -21,6 +22,8 @@ Just a daily number and some competition.
   - Year
   - All Time
   - Longest Streaks
+- Global cross-server leaderboards
+- Leaderboard rank comparison (points to next position)
 - Streak tracking (current and best)
 - Streak milestone notifications (10 / 100 / 500 / 1000 days)
 - Detailed user statistics:
@@ -31,6 +34,7 @@ Just a daily number and some competition.
 - Reset timers for active periods
 - Persistent SQLite storage
 - Automated compressed weekly database backups (180-day retention)
+- Owner admin tools for maintenance
 
 ---
 
@@ -47,7 +51,10 @@ Public:
 Owner-only (optional, requires ADMIN_MODE=true):
 
 - `/undo` – Delete latest roll for a user
-- `/export` – Export guild & global bot statistics (CSV)
+- `/export` – Export guild & global bot statistics
+- `/user` – View full roll history summary for a user
+- `/forceroll` – Insert a manual roll
+- `/purgeuser` – Delete all rolls for a user
 
 ---
 
@@ -113,3 +120,27 @@ Example `.env`:
 
 The bot is intentionally minimal and avoids complex state mutations.
 All statistics are derived directly from stored roll history.
+
+---
+
+### Database
+
+RollF uses SQLite in WAL mode for safe concurrent reads and writes.
+
+Schema migrations are handled automatically on startup,
+including historical backfilling of roll dates.
+
+---
+
+## Name & Official Instance
+
+RollF is open source under the MIT license.
+
+However, the name **"RollF"** and the official public bot instance
+are maintained by the original author.
+
+Forks and modified versions are welcome, but please do not present
+them as the official RollF bot.
+
+If you run your own instance, please use a different bot name to
+avoid confusion with the official deployment.

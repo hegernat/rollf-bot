@@ -1,3 +1,11 @@
+# -----------------------------------------------
+# RollF – Minimal daily roll Discord bot
+# Copyright (c) 2026 hegernat
+# Licensed under the MIT License
+#
+# Source: https://github.com/hegernat/rollf-bot
+# -----------------------------------------------
+
 import asyncio
 import sqlite3
 import secrets
@@ -40,8 +48,64 @@ ONBOARDING_TEXT = (
 
 # ---------------- DB ----------------
 
+def ensure_schema():
+
+    with db() as con:
+
+        cols = con.execute("PRAGMA table_info(rolls)").fetchall()
+        names = {c[1] for c in cols}
+
+        if "roll_date" not in names:
+            con.execute("ALTER TABLE rolls ADD COLUMN roll_date TEXT")
+
+        # Backfill missing roll_date for old rows
+        con.execute("""
+            UPDATE rolls
+            SET roll_date = date(rolled_at, 'unixepoch')
+            WHERE roll_date IS NULL
+        """)
+
 def db():
-    return sqlite3.connect(DB_PATH)
+
+    con = sqlite3.connect(
+        DB_PATH,
+        timeout=30,
+        isolation_level=None
+    )
+
+    con.row_factory = sqlite3.Row
+
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA synchronous=NORMAL")
+    con.execute("PRAGMA temp_store=MEMORY")
+    con.execute("PRAGMA foreign_keys=ON")
+
+    return con
+
+def ensure_indexes():
+    with db() as con:
+
+        con.execute("""
+        CREATE INDEX IF NOT EXISTS idx_rolls_user_time
+        ON rolls(user_id, rolled_at)
+        """)
+
+        con.execute("""
+        CREATE INDEX IF NOT EXISTS idx_rolls_time
+        ON rolls(rolled_at)
+        """)
+
+        con.execute("""
+        CREATE INDEX IF NOT EXISTS idx_rolls_user_period
+        ON rolls(rolled_at, user_id)
+        WHERE actor_type='user'
+        """)
+
+        con.execute("""
+        CREATE INDEX IF NOT EXISTS idx_rolls_user_date
+        ON rolls(user_id, roll_date)
+        WHERE actor_type='user'
+        """)
 
 def today_range():
     now = datetime.now(TZ)
@@ -78,11 +142,15 @@ def upsert_user(user_id: int, username: str):
 
 
 def insert_roll(user_id, username, value, actor_type):
+
+    ts = int(time.time())
+    roll_date = datetime.fromtimestamp(ts, TZ).date().isoformat()
+
     with db() as con:
         con.execute(
-            """INSERT INTO rolls (user_id, username, value, rolled_at, actor_type)
-               VALUES (?, ?, ?, ?, ?)""",
-            (user_id, username, value, int(time.time()), actor_type)
+            """INSERT INTO rolls (user_id, username, value, rolled_at, actor_type, roll_date)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (user_id, username, value, ts, actor_type, roll_date)
         )
 
 def trim(name: str, max_len: int = 16) -> str:
@@ -148,59 +216,53 @@ def get_user_stats(user_id: int):
     }
 
 def calculate_streaks(user_id: int):
-    """
-    Returns (current_streak, best_streak)
-    Based on calendar days in Europe/Stockholm.
-    """
 
     with db() as con:
         rows = con.execute("""
-            SELECT rolled_at
+            SELECT DISTINCT roll_date
             FROM rolls
             WHERE user_id = ?
               AND actor_type = 'user'
-            ORDER BY rolled_at ASC
+            ORDER BY roll_date
         """, (user_id,)).fetchall()
 
     if not rows:
         return 0, 0
 
-    # Convert timestamps to unique local dates
-    dates = set()
-
-    for (ts,) in rows:
-        dt = datetime.fromtimestamp(ts, TZ)
-        dates.add(dt.date())
-
-    sorted_dates = sorted(dates)
+    dates = [datetime.fromisoformat(r[0]).date() for r in rows if r[0]]
 
     best = 0
     current_run = 0
     prev_date = None
 
-    for d in sorted_dates:
+    for d in dates:
+
         if prev_date is None:
             current_run = 1
+
         elif d == prev_date + timedelta(days=1):
             current_run += 1
+
         else:
             current_run = 1
 
         best = max(best, current_run)
         prev_date = d
 
-    # Calculate current streak (must include today)
     today = datetime.now(TZ).date()
 
-    if today not in dates:
+    date_set = set(dates)
+
+    if today not in date_set:
         current = 0
     else:
         current = 1
         check_day = today
 
         while True:
-            check_day = check_day - timedelta(days=1)
-            if check_day in dates:
+            check_day -= timedelta(days=1)
+
+            if check_day in date_set:
                 current += 1
             else:
                 break
@@ -290,6 +352,9 @@ async def on_guild_remove(guild: discord.Guild):
 @bot.event
 async def on_ready():
 
+    ensure_schema()
+    ensure_indexes()
+
     print(f"{BOT_NAME} logging in...")
     print("Connected guilds:", [g.id for g in bot.guilds])
     print("ADMIN_GUILD_ID:", ADMIN_GUILD_ID)
@@ -315,6 +380,9 @@ async def on_ready():
                 print("Admin guild sync error:", e)
         else:
             print("Admin guild not found in bot.guilds")
+
+    if not ADMIN_MODE:
+        print("Admin mode disabled.")
 
     # -------- Cleanup stale guilds --------
     current_ids = {g.id for g in bot.guilds}
@@ -655,7 +723,7 @@ async def roll(interaction: discord.Interaction):
         await msg.edit(
             content=f"{interaction.user.mention} rolling {fake}"
         )
-        await asyncio.sleep(0.35)
+        await asyncio.sleep(0.5)
 
     # Final result after animation
     upsert_user(interaction.user.id, interaction.user.name)
@@ -672,9 +740,14 @@ async def roll(interaction: discord.Interaction):
             )
         )
     else:
-        await msg.edit(
-            content=f"{interaction.user.mention} rolled **{value}** 🎲"
-        )
+        if value == 100:
+            await msg.edit(
+                content=f"{interaction.user.mention} rolled 💯 🎲"
+            )
+        else:
+            await msg.edit(
+                content=f"{interaction.user.mention} rolled **{value}** 🎲"
+            )
 
 @bot.tree.command(
     name="leaderboards",
@@ -707,16 +780,18 @@ async def leaderboards(
 
         with db() as con:
             user_ids = con.execute("""
-                SELECT DISTINCT user_id
+                SELECT user_id, COUNT(DISTINCT roll_date)
                 FROM rolls
-                WHERE actor_type = 'user'
+                WHERE actor_type='user'
+                GROUP BY user_id
+                HAVING COUNT(DISTINCT roll_date) >= 2
             """).fetchall()
 
         streak_data = []
 
-        for (uid,) in user_ids:
+        for uid, _ in user_ids:
             _, best = calculate_streaks(uid)
-            if best > 0:
+            if best >= 2:
                 streak_data.append((uid, best))
 
         streak_data.sort(key=lambda x: x[1], reverse=True)
@@ -885,7 +960,7 @@ async def leaderboards(
         embed.add_field(
             name="Statistics",
             value=(
-                f"Users with streaks: {players_count}\n"
+                f"Users: {players_count}\n"
                 f"Guilds: {guild_count}"
             ),
             inline=False
@@ -910,12 +985,23 @@ async def leaderboards(
             user_score = score
             break
 
+    delta = None
+
+    if user_rank and user_rank > 1:
+        above_score = ranking[user_rank - 2][1]
+        delta = above_score - user_score
+
     top_ids = [uid for _, _, uid in rows]
 
     if user_rank and interaction.user.id not in top_ids:
+        if delta:
+            text = f"#{user_rank} — {user_score:,}\n↥ {delta:,} to #{user_rank-1}"
+        else:
+            text = f"#{user_rank} — {user_score:,}"
+
         embed.add_field(
             name="Your Position",
-            value=f"#{user_rank} — {user_score:,}",
+            value=text,
             inline=False
         )
 
@@ -1113,6 +1199,142 @@ if ADMIN_MODE:
             f"Deleted roll {value} "
             f"({dt.strftime('%Y-%m-%d %H:%M')}) "
             f"for user_id {target_id}",
+            ephemeral=True
+        )
+    
+    @bot.tree.command(
+        name="user",
+        description="Admin view of a user's roll data",
+        guild=discord.Object(id=ADMIN_GUILD_ID)
+    )
+    async def admin_user(
+        interaction: discord.Interaction,
+        user: discord.User
+    ):
+
+        if interaction.user.id != OWNER_ID:
+            await interaction.response.send_message("No.", ephemeral=True)
+            return
+
+        uid = user.id
+
+        with db() as con:
+
+            rolls = con.execute("""
+                SELECT value, rolled_at
+                FROM rolls
+                WHERE user_id = ?
+                  AND actor_type = 'user'
+                ORDER BY rolled_at
+            """, (uid,)).fetchall()
+
+        if not rolls:
+            await interaction.response.send_message(
+                "User has no rolls.",
+                ephemeral=True
+            )
+            return
+
+        values = [r[0] for r in rolls]
+
+        total_rolls = len(values)
+        best_roll = max(values)
+        avg_roll = round(sum(values) / total_rolls, 2)
+
+        current, best = calculate_streaks(uid)
+
+        first_roll = datetime.fromtimestamp(rolls[0][1], TZ).strftime("%Y-%m-%d")
+        last_roll = datetime.fromtimestamp(rolls[-1][1], TZ).strftime("%Y-%m-%d")
+
+        await interaction.response.send_message(
+            f"User: {user.name}\n"
+            f"Rolls: {total_rolls}\n"
+            f"Best roll: {best_roll}\n"
+            f"Average: {avg_roll}\n"
+            f"Current streak: {current}\n"
+            f"Best streak: {best}\n"
+            f"First roll: {first_roll}\n"
+            f"Last roll: {last_roll}",
+            ephemeral=True
+        )
+
+    @bot.tree.command(
+        name="forceroll",
+        description="Insert a manual roll for a user",
+        guild=discord.Object(id=ADMIN_GUILD_ID)
+    )
+    async def admin_forceroll(
+        interaction: discord.Interaction,
+        user: discord.User,
+        value: int
+    ):
+
+        if interaction.user.id != OWNER_ID:
+            await interaction.response.send_message("No.", ephemeral=True)
+            return
+
+        if value < 1 or value > 100:
+            await interaction.response.send_message(
+                "Value must be between 1 and 100.",
+                ephemeral=True
+            )
+            return
+
+        now = int(time.time())
+
+        ts = int(time.time())
+        roll_date = datetime.fromtimestamp(ts, TZ).date().isoformat()
+
+        with db() as con:
+            con.execute(
+                """INSERT INTO rolls (user_id, username, value, rolled_at, actor_type, roll_date)
+                   VALUES (?, ?, ?, ?, 'user', ?)""",
+                (
+                    user.id,
+                    user.name,
+                    value,
+                    ts,
+                    roll_date
+                )
+            )
+
+        await interaction.response.send_message(
+            f"Inserted roll {value} for {user.name}.",
+            ephemeral=True
+        )
+    
+    @bot.tree.command(
+        name="purgeuser",
+        description="Delete all rolls for a user",
+        guild=discord.Object(id=ADMIN_GUILD_ID)
+    )
+    async def admin_purgeuser(
+        interaction: discord.Interaction,
+        user: discord.User,
+        confirm: bool
+    ):
+
+        if interaction.user.id != OWNER_ID:
+            await interaction.response.send_message("No.", ephemeral=True)
+            return
+
+        if not confirm:
+            await interaction.response.send_message(
+                "Set confirm=true to purge this user.",
+                ephemeral=True
+            )
+            return
+
+        with db() as con:
+            cur = con.execute(
+                "DELETE FROM rolls WHERE user_id = ?",
+                (user.id,)
+            )
+
+            deleted = cur.rowcount
+
+        await interaction.response.send_message(
+            f"Deleted {deleted} rolls for {user.name}.",
             ephemeral=True
         )
 
