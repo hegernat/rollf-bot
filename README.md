@@ -18,6 +18,7 @@ Just a daily number and some competition.
 
 RollF is the official public instance operated by the original author.
 The source code for the bot is available here on GitHub.
+
 ---
 
 ## Features
@@ -153,11 +154,7 @@ All statistics are derived directly from stored roll history.
 
 RollF is open source under the MIT license.
 
-However, the name **"RollF"** and the official public bot instance
-are maintained by the original author.
+However, the name **"RollF"** and the official public bot instance are maintained by the original author. 
+Forks and modified versions are welcome, but please do not present them as the official RollF bot.
 
-Forks and modified versions are welcome, but please do not present
-them as the official RollF bot.
-
-If you run your own instance, please use a different bot name to
-avoid confusion with the official deployment.
+If you run your own instance, please use a different bot name to avoid confusion with the official deployment.
