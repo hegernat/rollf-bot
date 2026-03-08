@@ -72,7 +72,15 @@ Owner-only (optional, requires ADMIN_MODE=true):
 
 ### Example Roll
 
-![Roll Demo](https://raw.githubusercontent.com/hegernat/rollf-bot/main/assets/roll-example.gif)
+<p align="center">
+  <img src="assets/roll-example.gif" width="650">
+</p>
+
+### Leaderboards
+
+<p align="center">
+  <img src="assets/rollf-leaderboards.png" width="650">
+</p>
 
 ---
 
