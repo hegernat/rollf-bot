@@ -1,16 +1,16 @@
-# -----------------------------------------------
+# -----------------------------------------
 # RollF – Minimal daily roll Discord bot
 # Copyright (c) 2026 hegernat
 # Licensed under the MIT License
 #
 # Source: https://github.com/hegernat/rollf-bot
-# -----------------------------------------------
+# -----------------------------------------
 
+import aiohttp
 import asyncio
 import sqlite3
 import secrets
 import time
-import random
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import csv
@@ -27,6 +27,14 @@ TZ = ZoneInfo("Europe/Stockholm")
 BOT_NAME = "RollF"
 DB_PATH = "bot.db"
 
+BOTLIST_COMMANDS = [
+    {"command": "roll", "description": "Roll your daily number (1–100)"},
+    {"command": "leaderboards", "description": "View rankings for different periods"},
+    {"command": "stats", "description": "View detailed statistics"},
+    {"command": "setchannel", "description": "Set the channel for daily bot rolls"},
+    {"command": "help", "description": "Show setup instructions"}
+]
+
 load_dotenv()
 
 # ---------------- ADMIN ----------------
@@ -35,6 +43,8 @@ ADMIN_MODE = os.getenv("ADMIN_MODE") == "true"
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 ADMIN_GUILD_ID = int(os.getenv("ADMIN_GUILD_ID", "0"))
 TOKEN = os.getenv("DISCORD_TOKEN")
+BOTLIST_TOKEN = os.getenv("BOTLIST_TOKEN")
+TOPGG_TOKEN = os.getenv("TOPGG_TOKEN")
 
 ONBOARDING_TEXT = (
     "**Thanks for adding RollF!**\n\n"
@@ -47,6 +57,53 @@ ONBOARDING_TEXT = (
 )
 
 # ---------------- DB ----------------
+
+async def post_bot_stats():
+
+    guild_count = len(bot.guilds)
+    bot_id = bot.user.id
+
+    async with aiohttp.ClientSession() as session:
+
+        if BOTLIST_TOKEN:
+            try:
+                await session.post(
+                    f"https://discordbotlist.com/api/v1/bots/{bot_id}/stats",
+                    json={"guilds": guild_count},
+                    headers={"Authorization": BOTLIST_TOKEN},
+                    timeout=aiohttp.ClientTimeout(total=10)
+                )
+            except Exception as e:
+                print("Botlist stats failed:", e)
+
+        if TOPGG_TOKEN:
+            try:
+                await session.post(
+                    f"https://top.gg/api/bots/{bot_id}/stats",
+                    json={"server_count": guild_count},
+                    headers={"Authorization": TOPGG_TOKEN},
+                    timeout=aiohttp.ClientTimeout(total=10)
+                )
+            except Exception as e:
+                print("Top.gg stats failed:", e)
+
+async def post_botlist_commands():
+
+    if not BOTLIST_TOKEN:
+        return
+
+    bot_id = bot.user.id
+
+    async with aiohttp.ClientSession() as session:
+        try:
+            await session.post(
+                f"https://discordbotlist.com/api/v1/bots/{bot_id}/commands",
+                json=BOTLIST_COMMANDS,
+                headers={"Authorization": BOTLIST_TOKEN},
+                timeout=aiohttp.ClientTimeout(total=10)
+            )
+        except Exception as e:
+            print("Botlist commands update failed:", e)
 
 def ensure_schema():
 
@@ -331,7 +388,7 @@ async def on_guild_join(guild: discord.Guild):
             break
 
     if channel is None:
-        return  # No valid channel → stay silent
+        return
 
     try:
         await channel.send(ONBOARDING_TEXT)
@@ -341,19 +398,26 @@ async def on_guild_join(guild: discord.Guild):
                 (guild.id,)
             )
     except discord.Forbidden:
-        pass  # Shouldn't happen, but stay silent
+        pass
+
+    await post_bot_stats()
 
 @bot.event
 async def on_guild_remove(guild: discord.Guild):
     with db() as con:
         con.execute("DELETE FROM guild_channels WHERE guild_id = ?", (guild.id,))
         con.execute("DELETE FROM guild_meta WHERE guild_id = ?", (guild.id,))
+    
+    await post_bot_stats()
 
 @bot.event
 async def on_ready():
 
     ensure_schema()
     ensure_indexes()
+    
+    await post_botlist_commands()
+    await post_bot_stats()
 
     print(f"{BOT_NAME} logging in...")
     print("Connected guilds:", [g.id for g in bot.guilds])
