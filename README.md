@@ -73,13 +73,13 @@ Owner-only (optional, requires ADMIN_MODE=true):
 ### Example Roll
 
 <p align="center">
-  <img src="assets/roll-example.gif" width="650">
+  <img src="assets/roll-example.gif" width="500">
 </p>
 
 ### Leaderboards
 
 <p align="center">
-  <img src="assets/rollf-leaderboards.png" width="650">
+  <img src="assets/rollf-leaderboards.png" width="500">
 </p>
 
 ---
@@ -90,6 +90,9 @@ Use the invite button at the top of this page to add RollF to your server.
 
 RollF is also available on top.gg:
 https://top.gg/bot/1409207722783543347
+
+...and on discordbotlist.com:
+https://discordbotlist.com/bots/rollf
 
 ---
 
