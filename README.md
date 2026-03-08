@@ -116,6 +116,13 @@ python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 ```
+
+Dependencies include:
+
+- discord.py
+- aiohttp
+- python-dotenv
+
 Create a .env file in the project root:
 ```env
 DISCORD_TOKEN=your_token_here
