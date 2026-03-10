@@ -117,7 +117,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Dependencies include:
+Dependencies are installed via `requirements.txt` and include:
 
 - discord.py
 - aiohttp

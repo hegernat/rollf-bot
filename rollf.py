@@ -38,6 +38,9 @@ BOTLIST_COMMANDS = [
 
 load_dotenv()
 
+LEADERBOARD_CACHE = {}
+LEADERBOARD_CACHE_TTL = 30
+
 # ---------------- ADMIN ----------------
 
 ADMIN_MODE = os.getenv("ADMIN_MODE") == "true"
@@ -116,11 +119,19 @@ def ensure_schema():
         if "roll_date" not in names:
             con.execute("ALTER TABLE rolls ADD COLUMN roll_date TEXT")
 
-        # Backfill missing roll_date for old rows
         con.execute("""
             UPDATE rolls
             SET roll_date = date(rolled_at, 'unixepoch')
             WHERE roll_date IS NULL
+        """)
+
+        con.execute("""
+        CREATE TABLE IF NOT EXISTS user_scores (
+            user_id INTEGER PRIMARY KEY,
+            score INTEGER NOT NULL DEFAULT 0,
+            rolls INTEGER NOT NULL DEFAULT 0,
+            best INTEGER NOT NULL DEFAULT 0
+        )
         """)
 
 _local = threading.local()
@@ -145,6 +156,16 @@ def db():
 
 def ensure_indexes():
     with db() as con:
+
+        con.execute("""
+        CREATE INDEX IF NOT EXISTS idx_rolls_actor_time_user
+        ON rolls(actor_type, rolled_at, user_id)
+        """)
+
+        con.execute("""
+        CREATE INDEX IF NOT EXISTS idx_user_scores_score
+        ON user_scores(score DESC)
+        """)
 
         con.execute("""
         CREATE INDEX IF NOT EXISTS idx_rolls_user_time
@@ -213,6 +234,15 @@ def insert_roll(user_id, username, value, actor_type):
                VALUES (?, ?, ?, ?, ?, ?)""",
             (user_id, username, value, ts, actor_type, roll_date)
         )
+
+        con.execute("""
+        INSERT INTO user_scores (user_id, score, rolls, best)
+        VALUES (?, ?, 1, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            score = score + excluded.score,
+            rolls = rolls + 1,
+            best = MAX(best, excluded.best)
+        """, (user_id, value, value))
 
 def trim(name: str, max_len: int = 16) -> str:
     return name if len(name) <= max_len else name[:max_len - 1] + "…"
@@ -773,6 +803,7 @@ async def roll(interaction: discord.Interaction):
     if steps == 0:
         upsert_user(interaction.user.id, interaction.user.name)
         insert_roll(interaction.user.id, interaction.user.name, value, "user")
+        LEADERBOARD_CACHE.clear()
         await interaction.response.send_message(
             f"{interaction.user.mention} rolled **{value}** 🎲"
         )
@@ -796,7 +827,7 @@ async def roll(interaction: discord.Interaction):
     # Final result after animation
     upsert_user(interaction.user.id, interaction.user.name)
     insert_roll(interaction.user.id, interaction.user.name, value, "user")
-
+    LEADERBOARD_CACHE.clear()
     current_streak, _ = calculate_streaks(interaction.user.id)
     milestones = {10, 100, 500, 1000}
 
@@ -835,6 +866,16 @@ async def leaderboards(
     period: app_commands.Choice[str] = None
 ):
     period_value = period.value if period else "today"
+    cache_key = period_value
+    now_ts = time.time()
+
+    cached = LEADERBOARD_CACHE.get(cache_key)
+
+    if cached and now_ts - cached["time"] < LEADERBOARD_CACHE_TTL:
+        embed = cached["embed"]
+        await interaction.response.send_message(embed=embed)
+        return
+
     now = datetime.now(TZ)
 
     rows = []
@@ -1123,6 +1164,10 @@ async def leaderboards(
         reset_text = f"Next reset in {time_left} • Europe/Stockholm (CET/CEST)"
 
     embed.set_footer(text=reset_text)
+    LEADERBOARD_CACHE[cache_key] = {
+        "time": time.time(),
+        "embed": embed
+    }
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(
@@ -1270,6 +1315,7 @@ if ADMIN_MODE:
                 (rowid,)
             )
 
+        LEADERBOARD_CACHE.clear()
         dt = datetime.fromtimestamp(ts, TZ)
 
         await interaction.response.send_message(
@@ -1373,6 +1419,8 @@ if ADMIN_MODE:
                 )
             )
 
+        LEADERBOARD_CACHE.clear()
+
         await interaction.response.send_message(
             f"Inserted roll {value} for {user.name}.",
             ephemeral=True
@@ -1406,7 +1454,9 @@ if ADMIN_MODE:
                 (user.id,)
             )
 
-            deleted = cur.rowcount
+        deleted = cur.rowcount
+
+        LEADERBOARD_CACHE.clear()
 
         await interaction.response.send_message(
             f"Deleted {deleted} rolls for {user.name}.",
