@@ -983,21 +983,21 @@ async def leaderboards(
             if period_value == "alltime":
 
                 rows = con.execute("""
-                    SELECT COALESCE(u.username, r.username), SUM(r.value), r.user_id
-                    FROM rolls r
-                    LEFT JOIN users u ON u.user_id = r.user_id
-                    WHERE r.actor_type = 'user'
-                    GROUP BY r.user_id
-                    ORDER BY SUM(r.value) DESC
+                    SELECT
+                        COALESCE(u.username, 'Unknown'),
+                        s.score,
+                        s.user_id
+                    FROM user_scores s
+                    LEFT JOIN users u ON u.user_id = s.user_id
+                    ORDER BY s.score DESC
                     LIMIT 10
                 """).fetchall()
 
                 ranking = con.execute("""
-                    SELECT r.user_id, SUM(r.value)
-                    FROM rolls r
-                    WHERE r.actor_type = 'user'
-                    GROUP BY r.user_id
-                    ORDER BY SUM(r.value) DESC
+                    SELECT user_id, score
+                    FROM user_scores
+                    ORDER BY score DESC
+                    LIMIT 100
                 """).fetchall()
 
                 stats_row = con.execute("""
