@@ -6,13 +6,12 @@
 # Source: https://github.com/hegernat/rollf-bot
 # -----------------------------------------
 
+import threading
 import aiohttp
 import asyncio
 import sqlite3
 import secrets
 import time
-from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 import csv
 import io
 import os
@@ -20,6 +19,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 # ---------------- CONFIG ----------------
 
@@ -122,20 +123,23 @@ def ensure_schema():
             WHERE roll_date IS NULL
         """)
 
+_local = threading.local()
+
 def db():
+    con = getattr(_local, "con", None)
 
-    con = sqlite3.connect(
-        DB_PATH,
-        timeout=30,
-        isolation_level=None
-    )
-
-    con.row_factory = sqlite3.Row
-
-    con.execute("PRAGMA journal_mode=WAL")
-    con.execute("PRAGMA synchronous=NORMAL")
-    con.execute("PRAGMA temp_store=MEMORY")
-    con.execute("PRAGMA foreign_keys=ON")
+    if con is None:
+        con = sqlite3.connect(
+            DB_PATH,
+            timeout=30,
+            isolation_level=None
+        )
+        con.row_factory = sqlite3.Row
+        con.execute("PRAGMA journal_mode=WAL")
+        con.execute("PRAGMA synchronous=NORMAL")
+        con.execute("PRAGMA temp_store=MEMORY")
+        con.execute("PRAGMA foreign_keys=ON")
+        _local.con = con
 
     return con
 
@@ -470,7 +474,7 @@ async def on_ready():
         print(f"Cleaned {cleaned} stale guild entries")
 
     # -------- Start daily roll task --------
-    bot.loop.create_task(bot_daily_roll())
+    asyncio.create_task(bot_daily_roll())
 
     print(f"{BOT_NAME} online & ready.")
 
@@ -843,31 +847,45 @@ async def leaderboards(
     if period_value == "streak":
 
         with db() as con:
-            user_ids = con.execute("""
-                SELECT user_id, COUNT(DISTINCT roll_date)
-                FROM rolls
-                WHERE actor_type='user'
-                GROUP BY user_id
-                HAVING COUNT(DISTINCT roll_date) >= 2
+            all_dates = con.execute("""
+                SELECT r.user_id, r.roll_date, COALESCE(u.username, r.username) as username
+                FROM rolls r
+                LEFT JOIN users u ON u.user_id = r.user_id
+                WHERE r.actor_type = 'user' AND r.roll_date IS NOT NULL
+                GROUP BY r.user_id, r.roll_date
+                ORDER BY r.user_id, r.roll_date
             """).fetchall()
 
+        user_dates = {}
+        user_names = {}
+
+        for uid, roll_date, username in all_dates:
+            if uid not in user_dates:
+                user_dates[uid] = set()
+                user_names[uid] = username
+            user_dates[uid].add(roll_date)
+
+        # Beräkna best streak per användare
         streak_data = []
 
-        for uid, _ in user_ids:
-            _, best = calculate_streaks(uid)
+        for uid, date_set in user_dates.items():
+            dates = sorted(datetime.fromisoformat(d).date() for d in date_set)
+            best = 1
+            current_run = 1
+
+            for i in range(1, len(dates)):
+                if dates[i] == dates[i - 1] + timedelta(days=1):
+                    current_run += 1
+                    best = max(best, current_run)
+                else:
+                    current_run = 1
+
             if best >= 2:
-                streak_data.append((uid, best))
+                streak_data.append((uid, best, user_names[uid]))
 
         streak_data.sort(key=lambda x: x[1], reverse=True)
 
-        for uid, best in streak_data:
-            with db() as con:
-                row = con.execute(
-                    "SELECT username FROM users WHERE user_id = ?",
-                    (uid,)
-                ).fetchone()
-
-            username = row[0] if row else str(uid)
+        for uid, best, username in streak_data:
             rows.append((username, best, uid))
             ranking.append((uid, best))
 
@@ -880,9 +898,6 @@ async def leaderboards(
     # NORMAL PERIOD LEADERBOARDS
     # =========================
     else:
-
-        include_bot = period_value == "today"
-        actor_filter = "IN ('user','bot')" if include_bot else "= 'user'"
 
         start_ts = None
         end_ts = None
@@ -926,59 +941,57 @@ async def leaderboards(
 
             if period_value == "alltime":
 
-                rows = con.execute(f"""
+                rows = con.execute("""
                     SELECT COALESCE(u.username, r.username), SUM(r.value), r.user_id
                     FROM rolls r
                     LEFT JOIN users u ON u.user_id = r.user_id
-                    WHERE r.actor_type {actor_filter}
+                    WHERE r.actor_type = 'user'
                     GROUP BY r.user_id
                     ORDER BY SUM(r.value) DESC
                     LIMIT 10
                 """).fetchall()
 
-                ranking = con.execute(f"""
+                ranking = con.execute("""
                     SELECT r.user_id, SUM(r.value)
                     FROM rolls r
-                    WHERE r.actor_type {actor_filter}
+                    WHERE r.actor_type = 'user'
                     GROUP BY r.user_id
                     ORDER BY SUM(r.value) DESC
                 """).fetchall()
 
-                stats_row = con.execute(f"""
+                stats_row = con.execute("""
                     SELECT COUNT(DISTINCT user_id), COUNT(*)
                     FROM rolls
-                    WHERE actor_type {actor_filter}
+                    WHERE actor_type = 'user'
                 """).fetchone()
 
             else:
 
-                aggregate = "MAX(r.value)" if period_value == "today" else "SUM(r.value)"
-
-                rows = con.execute(f"""
-                    SELECT COALESCE(u.username, r.username), {aggregate}, r.user_id
+                rows = con.execute("""
+                    SELECT COALESCE(u.username, r.username), SUM(r.value), r.user_id
                     FROM rolls r
                     LEFT JOIN users u ON u.user_id = r.user_id
                     WHERE r.rolled_at BETWEEN ? AND ?
-                      AND r.actor_type {actor_filter}
+                      AND r.actor_type = 'user'
                     GROUP BY r.user_id
-                    ORDER BY {aggregate} DESC
+                    ORDER BY SUM(r.value) DESC
                     LIMIT 10
                 """, (start_ts, end_ts)).fetchall()
 
-                ranking = con.execute(f"""
-                    SELECT r.user_id, {aggregate}
+                ranking = con.execute("""
+                    SELECT r.user_id, SUM(r.value)
                     FROM rolls r
                     WHERE r.rolled_at BETWEEN ? AND ?
-                      AND r.actor_type {actor_filter}
+                      AND r.actor_type = 'user'
                     GROUP BY r.user_id
-                    ORDER BY {aggregate} DESC
+                    ORDER BY SUM(r.value) DESC
                 """, (start_ts, end_ts)).fetchall()
 
-                stats_row = con.execute(f"""
+                stats_row = con.execute("""
                     SELECT COUNT(DISTINCT user_id), COUNT(*)
                     FROM rolls
                     WHERE rolled_at BETWEEN ? AND ?
-                      AND actor_type {actor_filter}
+                      AND actor_type = 'user'
                 """, (start_ts, end_ts)).fetchone()
 
     # =========================
@@ -1343,8 +1356,6 @@ if ADMIN_MODE:
                 ephemeral=True
             )
             return
-
-        now = int(time.time())
 
         ts = int(time.time())
         roll_date = datetime.fromtimestamp(ts, TZ).date().isoformat()
