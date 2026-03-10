@@ -235,14 +235,15 @@ def insert_roll(user_id, username, value, actor_type):
             (user_id, username, value, ts, actor_type, roll_date)
         )
 
-        con.execute("""
-        INSERT INTO user_scores (user_id, score, rolls, best)
-        VALUES (?, ?, 1, ?)
-        ON CONFLICT(user_id) DO UPDATE SET
-            score = score + excluded.score,
-            rolls = rolls + 1,
-            best = MAX(best, excluded.best)
-        """, (user_id, value, value))
+        if actor_type == 'user':
+            con.execute("""
+            INSERT INTO user_scores (user_id, score, rolls, best)
+            VALUES (?, ?, 1, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                score = score + excluded.score,
+                rolls = rolls + 1,
+                best = MAX(best, excluded.best)
+            """, (user_id, value, value))
 
 def trim(name: str, max_len: int = 16) -> str:
     return name if len(name) <= max_len else name[:max_len - 1] + "…"
