@@ -1222,7 +1222,11 @@ async def leaderboards(
         if user_score:
             user_score = user_score[0]
 
-    for index, (uid, score) in enumerate(ranking, start=1):
+    for index, row in enumerate(ranking, start=1):
+
+        uid = row[0]
+        score = row[-1]
+
         if uid == interaction.user.id:
             user_rank = index
             user_score = score
@@ -1231,7 +1235,7 @@ async def leaderboards(
     delta = None
 
     if user_rank and user_rank > 1:
-        above_score = ranking[user_rank - 2][1]
+        above_score = ranking[user_rank - 2][2]
         delta = above_score - user_score
 
     top_ids = [uid for _, _, uid in rows]
