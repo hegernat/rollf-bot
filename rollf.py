@@ -113,6 +113,34 @@ def ensure_schema():
 
     with db() as con:
 
+        con.execute("""
+        CREATE TABLE IF NOT EXISTS daily_scores (
+            user_id INTEGER,
+            roll_date TEXT,
+            score INTEGER NOT NULL,
+            rolls INTEGER NOT NULL,
+            PRIMARY KEY(user_id, roll_date)
+        )
+        """)
+
+        count = con.execute(
+            "SELECT COUNT(*) FROM daily_scores"
+        ).fetchone()[0]
+
+        if count == 0:
+            con.execute("""
+            INSERT INTO daily_scores (user_id, roll_date, score, rolls)
+            SELECT
+                user_id,
+                roll_date,
+                SUM(value),
+                COUNT(*)
+            FROM rolls
+            WHERE actor_type = 'user'
+              AND roll_date IS NOT NULL
+            GROUP BY user_id, roll_date
+            """)
+
         cols = con.execute("PRAGMA table_info(rolls)").fetchall()
         names = {c[1] for c in cols}
 
@@ -120,18 +148,9 @@ def ensure_schema():
             con.execute("ALTER TABLE rolls ADD COLUMN roll_date TEXT")
 
         con.execute("""
-            UPDATE rolls
-            SET roll_date = date(rolled_at, 'unixepoch')
-            WHERE roll_date IS NULL
-        """)
-
-        con.execute("""
-        CREATE TABLE IF NOT EXISTS user_scores (
-            user_id INTEGER PRIMARY KEY,
-            score INTEGER NOT NULL DEFAULT 0,
-            rolls INTEGER NOT NULL DEFAULT 0,
-            best INTEGER NOT NULL DEFAULT 0
-        )
+        UPDATE rolls
+        SET roll_date = date(rolled_at, 'unixepoch')
+        WHERE roll_date IS NULL
         """)
 
 _local = threading.local()
@@ -156,6 +175,32 @@ def db():
 
 def ensure_indexes():
     with db() as con:
+
+        con.execute("""
+        CREATE INDEX IF NOT EXISTS idx_guild_channels_guild
+        ON guild_channels(guild_id)
+        """)
+
+        con.execute("""
+        CREATE INDEX IF NOT EXISTS idx_guild_channels_channel
+        ON guild_channels(channel_id)
+        """)
+
+        con.execute("""
+        CREATE INDEX IF NOT EXISTS idx_rolls_actor_date
+        ON rolls(actor_type, roll_date)
+        """)
+
+        con.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_one_roll_per_day
+        ON rolls(user_id, roll_date)
+        WHERE actor_type='user'
+        """)
+
+        con.execute("""
+        CREATE INDEX IF NOT EXISTS idx_daily_scores_date
+        ON daily_scores(roll_date)
+        """)
 
         con.execute("""
         CREATE INDEX IF NOT EXISTS idx_rolls_actor_time_user
@@ -188,6 +233,32 @@ def ensure_indexes():
         ON rolls(user_id, roll_date)
         WHERE actor_type='user'
         """)
+
+        con.execute("""
+        CREATE TABLE IF NOT EXISTS user_scores (
+            user_id INTEGER PRIMARY KEY,
+            score INTEGER NOT NULL DEFAULT 0,
+            rolls INTEGER NOT NULL DEFAULT 0,
+            best INTEGER NOT NULL DEFAULT 0
+        )
+        """)
+
+        count = con.execute("SELECT COUNT(*) FROM user_scores").fetchone()[0]
+
+        if count == 0:
+            con.execute("""
+            INSERT INTO user_scores (user_id, score, rolls, best)
+            SELECT
+                user_id,
+                SUM(value),
+                COUNT(*),
+                MAX(value)
+            FROM rolls
+            WHERE actor_type = 'user'
+            GROUP BY user_id
+            """)
+
+            print("Backfilled user_scores from rolls table")
 
 def today_range():
     now = datetime.now(TZ)
@@ -222,18 +293,21 @@ def upsert_user(user_id: int, username: str):
             (user_id, username, now)
         )
 
-
 def insert_roll(user_id, username, value, actor_type):
 
     ts = int(time.time())
     roll_date = datetime.fromtimestamp(ts, TZ).date().isoformat()
 
     with db() as con:
-        con.execute(
-            """INSERT INTO rolls (user_id, username, value, rolled_at, actor_type, roll_date)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (user_id, username, value, ts, actor_type, roll_date)
-        )
+
+        try:
+            con.execute(
+                """INSERT INTO rolls (user_id, username, value, rolled_at, actor_type, roll_date)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (user_id, username, value, ts, actor_type, roll_date)
+            )
+        except sqlite3.IntegrityError:
+            return False
 
         if actor_type == 'user':
             con.execute("""
@@ -244,6 +318,16 @@ def insert_roll(user_id, username, value, actor_type):
                 rolls = rolls + 1,
                 best = MAX(best, excluded.best)
             """, (user_id, value, value))
+
+            con.execute("""
+            INSERT INTO daily_scores (user_id, roll_date, score, rolls)
+            VALUES (?, ?, ?, 1)
+            ON CONFLICT(user_id, roll_date) DO UPDATE SET
+                score = score + excluded.score,
+                rolls = rolls + 1
+            """, (user_id, roll_date, value))
+
+    return True
 
 def trim(name: str, max_len: int = 16) -> str:
     return name if len(name) <= max_len else name[:max_len - 1] + "…"
@@ -282,17 +366,12 @@ def get_user_stats(user_id: int):
         rank = con.execute(
             """
             SELECT COUNT(*) + 1
-            FROM (
-                SELECT user_id, SUM(value) AS score
-                FROM rolls
-                WHERE actor_type = 'user'
-                GROUP BY user_id
-            )
-            WHERE score > (
-                SELECT SUM(value)
-                FROM rolls
+            FROM user_scores
+            WHERE score >
+            (
+                SELECT score
+                FROM user_scores
                 WHERE user_id = ?
-                  AND actor_type = 'user'
             )
             """,
             (user_id,)
@@ -455,8 +534,6 @@ async def on_ready():
     await post_bot_stats()
 
     print(f"{BOT_NAME} logging in...")
-    print("Connected guilds:", [g.id for g in bot.guilds])
-    print("ADMIN_GUILD_ID:", ADMIN_GUILD_ID)
 
     # -------- Global command sync --------
     try:
@@ -803,7 +880,15 @@ async def roll(interaction: discord.Interaction):
 
     if steps == 0:
         upsert_user(interaction.user.id, interaction.user.name)
-        insert_roll(interaction.user.id, interaction.user.name, value, "user")
+        success = insert_roll(interaction.user.id, interaction.user.name, value, "user")
+
+        if not success:
+            await interaction.response.send_message(
+                "You already rolled today.",
+                ephemeral=True
+            )
+            return
+
         LEADERBOARD_CACHE.clear()
         await interaction.response.send_message(
             f"{interaction.user.mention} rolled **{value}** 🎲"
@@ -825,9 +910,15 @@ async def roll(interaction: discord.Interaction):
         )
         await asyncio.sleep(0.5)
 
-    # Final result after animation
     upsert_user(interaction.user.id, interaction.user.name)
-    insert_roll(interaction.user.id, interaction.user.name, value, "user")
+    success = insert_roll(interaction.user.id, interaction.user.name, value, "user")
+
+    if not success:
+        await msg.edit(
+            content=f"{interaction.user.mention}\nYou already rolled today."
+        )
+        return
+
     LEADERBOARD_CACHE.clear()
     current_streak, _ = calculate_streaks(interaction.user.id)
     milestones = {10, 100, 500, 1000}
@@ -947,33 +1038,54 @@ async def leaderboards(
         if period_value == "today":
             start = datetime(now.year, now.month, now.day, tzinfo=TZ)
             end = start + timedelta(days=1)
+
             start_ts = int(start.timestamp())
             end_ts = int(end.timestamp())
+
+            start_date = start.date().isoformat()
+            end_date = end.date().isoformat()
+
             title_suffix = f"Today — {now.strftime('%B %d')}"
 
         elif period_value == "week":
             start = now - timedelta(days=now.weekday())
             start = datetime(start.year, start.month, start.day, tzinfo=TZ)
             end = start + timedelta(days=7)
+
             start_ts = int(start.timestamp())
             end_ts = int(end.timestamp())
+
+            start_date = start.date().isoformat()
+            end_date = end.date().isoformat()
+
             title_suffix = f"Week {now.isocalendar().week}"
 
         elif period_value == "month":
             start = datetime(now.year, now.month, 1, tzinfo=TZ)
+
             if now.month == 12:
                 end = datetime(now.year + 1, 1, 1, tzinfo=TZ)
             else:
                 end = datetime(now.year, now.month + 1, 1, tzinfo=TZ)
+
             start_ts = int(start.timestamp())
             end_ts = int(end.timestamp())
+
+            start_date = start.date().isoformat()
+            end_date = end.date().isoformat()
+
             title_suffix = f"{now.strftime('%B')} {now.year}"
 
         elif period_value == "year":
             start = datetime(now.year, 1, 1, tzinfo=TZ)
             end = datetime(now.year + 1, 1, 1, tzinfo=TZ)
+
             start_ts = int(start.timestamp())
             end_ts = int(end.timestamp())
+
+            start_date = start.date().isoformat()
+            end_date = end.date().isoformat()
+
             title_suffix = f"{now.year}"
 
         elif period_value == "alltime":
@@ -1010,24 +1122,26 @@ async def leaderboards(
             else:
 
                 rows = con.execute("""
-                    SELECT COALESCE(u.username, r.username), SUM(r.value), r.user_id
-                    FROM rolls r
-                    LEFT JOIN users u ON u.user_id = r.user_id
-                    WHERE r.rolled_at BETWEEN ? AND ?
-                      AND r.actor_type = 'user'
-                    GROUP BY r.user_id
-                    ORDER BY SUM(r.value) DESC
+                    SELECT COALESCE(u.username, 'Unknown'), SUM(d.score), d.user_id
+                    FROM daily_scores d
+                    LEFT JOIN users u ON u.user_id = d.user_id
+                    WHERE d.roll_date BETWEEN ? AND ?
+                    GROUP BY d.user_id
+                    ORDER BY SUM(d.score) DESC
                     LIMIT 10
-                """, (start_ts, end_ts)).fetchall()
+                """, (start_date, end_date)).fetchall()
 
                 ranking = con.execute("""
-                    SELECT r.user_id, SUM(r.value)
-                    FROM rolls r
-                    WHERE r.rolled_at BETWEEN ? AND ?
-                      AND r.actor_type = 'user'
-                    GROUP BY r.user_id
-                    ORDER BY SUM(r.value) DESC
-                """, (start_ts, end_ts)).fetchall()
+                    SELECT d.user_id,
+                           COALESCE(u.username, 'Unknown') AS username,
+                           SUM(d.score) AS score
+                    FROM daily_scores d
+                    LEFT JOIN users u ON u.user_id = d.user_id
+                    WHERE d.roll_date BETWEEN ? AND ?
+                    GROUP BY d.user_id
+                    ORDER BY score DESC
+                    LIMIT 100
+                """, (start_date, end_date)).fetchall()
 
                 stats_row = con.execute("""
                     SELECT COUNT(DISTINCT user_id), COUNT(*)
@@ -1097,6 +1211,16 @@ async def leaderboards(
 
     user_rank = None
     user_score = None
+
+    if user_rank is None:
+        with db() as con:
+            user_score = con.execute(
+                "SELECT score FROM user_scores WHERE user_id = ?",
+                (interaction.user.id,)
+            ).fetchone()
+
+        if user_score:
+            user_score = user_score[0]
 
     for index, (uid, score) in enumerate(ranking, start=1):
         if uid == interaction.user.id:
@@ -1293,8 +1417,9 @@ if ADMIN_MODE:
             return
 
         with db() as con:
+
             row = con.execute("""
-                SELECT rowid, value, rolled_at
+                SELECT rowid, value, rolled_at, roll_date
                 FROM rolls
                 WHERE user_id = ?
                   AND actor_type = 'user'
@@ -1309,14 +1434,47 @@ if ADMIN_MODE:
                 )
                 return
 
-            rowid, value, ts = row
+            rowid, value, ts, roll_date = row
 
+            # ----- update user_scores -----
+            con.execute("""
+                UPDATE user_scores
+                SET score = score - ?,
+                    rolls = rolls - 1
+                WHERE user_id = ?
+            """, (value, target_id))
+
+            # remove row if rolls reaches zero
+            con.execute("""
+                DELETE FROM user_scores
+                WHERE user_id = ?
+                  AND rolls <= 0
+            """, (target_id,))
+
+            # ----- update daily_scores -----
+            con.execute("""
+                UPDATE daily_scores
+                SET score = score - ?,
+                    rolls = rolls - 1
+                WHERE user_id = ?
+                  AND roll_date = ?
+            """, (value, target_id, roll_date))
+
+            con.execute("""
+                DELETE FROM daily_scores
+                WHERE user_id = ?
+                  AND roll_date = ?
+                  AND rolls <= 0
+            """, (target_id, roll_date))
+
+            # ----- remove roll -----
             con.execute(
                 "DELETE FROM rolls WHERE rowid = ?",
                 (rowid,)
             )
 
         LEADERBOARD_CACHE.clear()
+
         dt = datetime.fromtimestamp(ts, TZ)
 
         await interaction.response.send_message(
@@ -1407,18 +1565,48 @@ if ADMIN_MODE:
         ts = int(time.time())
         roll_date = datetime.fromtimestamp(ts, TZ).date().isoformat()
 
+        upsert_user(user.id, user.name)
+
         with db() as con:
-            con.execute(
-                """INSERT INTO rolls (user_id, username, value, rolled_at, actor_type, roll_date)
-                   VALUES (?, ?, ?, ?, 'user', ?)""",
-                (
-                    user.id,
-                    user.name,
-                    value,
-                    ts,
-                    roll_date
+
+            # insert roll
+            try:
+                con.execute(
+                    """INSERT INTO rolls (user_id, username, value, rolled_at, actor_type, roll_date)
+                       VALUES (?, ?, ?, ?, 'user', ?)""",
+                    (
+                        user.id,
+                        user.name,
+                        value,
+                        ts,
+                        roll_date
+                    )
                 )
-            )
+            except sqlite3.IntegrityError:
+                await interaction.response.send_message(
+                    "User already has a roll today.",
+                    ephemeral=True
+                )
+                return
+
+            # update user_scores
+            con.execute("""
+            INSERT INTO user_scores (user_id, score, rolls, best)
+            VALUES (?, ?, 1, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                score = score + excluded.score,
+                rolls = rolls + 1,
+                best = MAX(best, excluded.best)
+            """, (user.id, value, value))
+
+            # update daily_scores
+            con.execute("""
+            INSERT INTO daily_scores (user_id, roll_date, score, rolls)
+            VALUES (?, ?, ?, 1)
+            ON CONFLICT(user_id, roll_date) DO UPDATE SET
+                score = score + excluded.score,
+                rolls = rolls + 1
+            """, (user.id, roll_date, value))
 
         LEADERBOARD_CACHE.clear()
 
@@ -1450,12 +1638,26 @@ if ADMIN_MODE:
             return
 
         with db() as con:
-            cur = con.execute(
+
+            deleted = con.execute(
+                "SELECT COUNT(*) FROM rolls WHERE user_id = ? AND actor_type='user'",
+                (user.id,)
+            ).fetchone()[0]
+
+            con.execute(
                 "DELETE FROM rolls WHERE user_id = ?",
                 (user.id,)
             )
 
-        deleted = cur.rowcount
+            con.execute(
+                "DELETE FROM user_scores WHERE user_id = ?",
+                (user.id,)
+            )
+
+            con.execute(
+                "DELETE FROM daily_scores WHERE user_id = ?",
+                (user.id,)
+            )
 
         LEADERBOARD_CACHE.clear()
 
