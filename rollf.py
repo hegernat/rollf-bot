@@ -40,6 +40,7 @@ load_dotenv()
 
 LEADERBOARD_CACHE = {}
 LEADERBOARD_CACHE_TTL = 30
+DAILY_ROLL_TASK = None
 
 # ---------------- ADMIN ----------------
 
@@ -113,6 +114,18 @@ def ensure_schema():
 
     with db() as con:
 
+        cols = con.execute("PRAGMA table_info(rolls)").fetchall()
+        names = {c[1] for c in cols}
+
+        if "roll_date" not in names:
+            con.execute("ALTER TABLE rolls ADD COLUMN roll_date TEXT")
+
+        con.execute("""
+        UPDATE rolls
+        SET roll_date = date(rolled_at, 'unixepoch')
+        WHERE roll_date IS NULL
+        """)
+
         con.execute("""
         CREATE TABLE IF NOT EXISTS daily_scores (
             user_id INTEGER,
@@ -140,18 +153,6 @@ def ensure_schema():
               AND roll_date IS NOT NULL
             GROUP BY user_id, roll_date
             """)
-
-        cols = con.execute("PRAGMA table_info(rolls)").fetchall()
-        names = {c[1] for c in cols}
-
-        if "roll_date" not in names:
-            con.execute("ALTER TABLE rolls ADD COLUMN roll_date TEXT")
-
-        con.execute("""
-        UPDATE rolls
-        SET roll_date = date(rolled_at, 'unixepoch')
-        WHERE roll_date IS NULL
-        """)
 
 _local = threading.local()
 
@@ -478,7 +479,7 @@ def get_period_stats(user_id: int, start_ts: int, end_ts: int):
 # ---------------- BOT SETUP ----------------
 
 intents = discord.Intents.default()
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix=None, intents=intents)
 
 # ---------------- EVENTS ----------------
 
@@ -526,6 +527,7 @@ async def on_guild_remove(guild: discord.Guild):
 
 @bot.event
 async def on_ready():
+    global DAILY_ROLL_TASK
 
     ensure_schema()
     ensure_indexes()
@@ -582,7 +584,8 @@ async def on_ready():
         print(f"Cleaned {cleaned} stale guild entries")
 
     # -------- Start daily roll task --------
-    asyncio.create_task(bot_daily_roll())
+    if DAILY_ROLL_TASK is None or DAILY_ROLL_TASK.done():
+        DAILY_ROLL_TASK = asyncio.create_task(bot_daily_roll())
 
     print(f"{BOT_NAME} online & ready.")
 
@@ -1234,8 +1237,9 @@ async def leaderboards(
 
     delta = None
 
-    if user_rank and user_rank > 1:
-        above_score = ranking[user_rank - 2][2]
+    if user_rank and user_rank > 1 and user_rank - 2 < len(ranking):
+        above_row = ranking[user_rank - 2]
+        above_score = above_row[-1]
         delta = above_score - user_score
 
     top_ids = [uid for _, _, uid in rows]
@@ -1387,106 +1391,6 @@ if ADMIN_MODE:
             files=[guild_file, stats_file],
             ephemeral=True
         )
-
-
-    @bot.tree.command(
-        name="undo",
-        description="Delete latest roll for a user",
-        guild=discord.Object(id=ADMIN_GUILD_ID)
-    )
-    async def undo_last_roll(
-        interaction: discord.Interaction,
-        user: discord.User | None = None,
-        user_id: str | None = None
-    ):
-
-        if interaction.user.id != OWNER_ID:
-            await interaction.response.send_message("No.", ephemeral=True)
-            return
-
-        target_id = None
-
-        if user:
-            target_id = user.id
-        elif user_id:
-            if not user_id.isdigit():
-                await interaction.response.send_message("Invalid user_id.", ephemeral=True)
-                return
-            target_id = int(user_id)
-        else:
-            await interaction.response.send_message(
-                "Provide a user or user_id.",
-                ephemeral=True
-            )
-            return
-
-        with db() as con:
-
-            row = con.execute("""
-                SELECT rowid, value, rolled_at, roll_date
-                FROM rolls
-                WHERE user_id = ?
-                  AND actor_type = 'user'
-                ORDER BY rolled_at DESC
-                LIMIT 1
-            """, (target_id,)).fetchone()
-
-            if not row:
-                await interaction.response.send_message(
-                    "User has no rolls.",
-                    ephemeral=True
-                )
-                return
-
-            rowid, value, ts, roll_date = row
-
-            # ----- update user_scores -----
-            con.execute("""
-                UPDATE user_scores
-                SET score = score - ?,
-                    rolls = rolls - 1
-                WHERE user_id = ?
-            """, (value, target_id))
-
-            # remove row if rolls reaches zero
-            con.execute("""
-                DELETE FROM user_scores
-                WHERE user_id = ?
-                  AND rolls <= 0
-            """, (target_id,))
-
-            # ----- update daily_scores -----
-            con.execute("""
-                UPDATE daily_scores
-                SET score = score - ?,
-                    rolls = rolls - 1
-                WHERE user_id = ?
-                  AND roll_date = ?
-            """, (value, target_id, roll_date))
-
-            con.execute("""
-                DELETE FROM daily_scores
-                WHERE user_id = ?
-                  AND roll_date = ?
-                  AND rolls <= 0
-            """, (target_id, roll_date))
-
-            # ----- remove roll -----
-            con.execute(
-                "DELETE FROM rolls WHERE rowid = ?",
-                (rowid,)
-            )
-
-        LEADERBOARD_CACHE.clear()
-
-        dt = datetime.fromtimestamp(ts, TZ)
-
-        await interaction.response.send_message(
-            f"Deleted roll {value} "
-            f"({dt.strftime('%Y-%m-%d %H:%M')}) "
-            f"for user_id {target_id}",
-            ephemeral=True
-        )
     
     @bot.tree.command(
         name="user",
@@ -1544,131 +1448,8 @@ if ADMIN_MODE:
             ephemeral=True
         )
 
-    @bot.tree.command(
-        name="forceroll",
-        description="Insert a manual roll for a user",
-        guild=discord.Object(id=ADMIN_GUILD_ID)
-    )
-    async def admin_forceroll(
-        interaction: discord.Interaction,
-        user: discord.User,
-        value: int
-    ):
-
-        if interaction.user.id != OWNER_ID:
-            await interaction.response.send_message("No.", ephemeral=True)
-            return
-
-        if value < 1 or value > 100:
-            await interaction.response.send_message(
-                "Value must be between 1 and 100.",
-                ephemeral=True
-            )
-            return
-
-        ts = int(time.time())
-        roll_date = datetime.fromtimestamp(ts, TZ).date().isoformat()
-
-        upsert_user(user.id, user.name)
-
-        with db() as con:
-
-            # insert roll
-            try:
-                con.execute(
-                    """INSERT INTO rolls (user_id, username, value, rolled_at, actor_type, roll_date)
-                       VALUES (?, ?, ?, ?, 'user', ?)""",
-                    (
-                        user.id,
-                        user.name,
-                        value,
-                        ts,
-                        roll_date
-                    )
-                )
-            except sqlite3.IntegrityError:
-                await interaction.response.send_message(
-                    "User already has a roll today.",
-                    ephemeral=True
-                )
-                return
-
-            # update user_scores
-            con.execute("""
-            INSERT INTO user_scores (user_id, score, rolls, best)
-            VALUES (?, ?, 1, ?)
-            ON CONFLICT(user_id) DO UPDATE SET
-                score = score + excluded.score,
-                rolls = rolls + 1,
-                best = MAX(best, excluded.best)
-            """, (user.id, value, value))
-
-            # update daily_scores
-            con.execute("""
-            INSERT INTO daily_scores (user_id, roll_date, score, rolls)
-            VALUES (?, ?, ?, 1)
-            ON CONFLICT(user_id, roll_date) DO UPDATE SET
-                score = score + excluded.score,
-                rolls = rolls + 1
-            """, (user.id, roll_date, value))
-
-        LEADERBOARD_CACHE.clear()
-
-        await interaction.response.send_message(
-            f"Inserted roll {value} for {user.name}.",
-            ephemeral=True
-        )
-    
-    @bot.tree.command(
-        name="purgeuser",
-        description="Delete all rolls for a user",
-        guild=discord.Object(id=ADMIN_GUILD_ID)
-    )
-    async def admin_purgeuser(
-        interaction: discord.Interaction,
-        user: discord.User,
-        confirm: bool
-    ):
-
-        if interaction.user.id != OWNER_ID:
-            await interaction.response.send_message("No.", ephemeral=True)
-            return
-
-        if not confirm:
-            await interaction.response.send_message(
-                "Set confirm=true to purge this user.",
-                ephemeral=True
-            )
-            return
-
-        with db() as con:
-
-            deleted = con.execute(
-                "SELECT COUNT(*) FROM rolls WHERE user_id = ? AND actor_type='user'",
-                (user.id,)
-            ).fetchone()[0]
-
-            con.execute(
-                "DELETE FROM rolls WHERE user_id = ?",
-                (user.id,)
-            )
-
-            con.execute(
-                "DELETE FROM user_scores WHERE user_id = ?",
-                (user.id,)
-            )
-
-            con.execute(
-                "DELETE FROM daily_scores WHERE user_id = ?",
-                (user.id,)
-            )
-
-        LEADERBOARD_CACHE.clear()
-
-        await interaction.response.send_message(
-            f"Deleted {deleted} rolls for {user.name}.",
-            ephemeral=True
-        )
-
 # ---------------- RUN ----------------
+if not TOKEN:
+    raise RuntimeError("DISCORD_TOKEN is missing")
+
 bot.run(TOKEN)
