@@ -21,6 +21,7 @@ from discord.ext import commands
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+from PIL import Image, ImageDraw, ImageFont
 
 # ---------------- CONFIG ----------------
 
@@ -38,8 +39,6 @@ BOTLIST_COMMANDS = [
 
 load_dotenv()
 
-LEADERBOARD_CACHE = {}
-LEADERBOARD_CACHE_TTL = 30
 DAILY_ROLL_TASK = None
 
 # ---------------- ADMIN ----------------
@@ -330,8 +329,8 @@ def insert_roll(user_id, username, value, actor_type):
 
     return True
 
-def trim(name: str, max_len: int = 16) -> str:
-    return name if len(name) <= max_len else name[:max_len - 1] + "…"
+def trim(name, max_len=16):
+    return name[:max_len-1] + "…" if len(name) > max_len else name
     
 def get_user_stats(user_id: int):
     with db() as con:
@@ -476,10 +475,173 @@ def get_period_stats(user_id: int, start_ts: int, end_ts: int):
         "rank": rank
     }
 
+def format_score(n: int) -> str:
+    if n >= 1000:
+        truncated = (n // 100) / 10
+        return f"{truncated:.1f}k"
+    return str(n)
+
+def render_leaderboard_png(title, rows, users_count=0, rolls_count=0):
+
+    import io
+
+    width = 600
+
+    top_padding = 20
+    header_y = 120
+    row_height = 48
+
+    height = 750
+
+    img = Image.new(
+        "RGB",
+        (width, height),
+        (35, 39, 42)
+    )
+
+    draw = ImageDraw.Draw(img)
+
+    title_font = ImageFont.truetype(
+        "assets/fonts/JetBrainsMono-Regular.ttf",
+        36
+    )
+
+    body_font = ImageFont.truetype(
+        "assets/fonts/JetBrainsMono-Regular.ttf",
+        28
+    )
+
+    RANK_X = 20
+    USER_X = 95
+    SCORE_RIGHT = 550
+
+    draw.text(
+        (20, top_padding),
+        title,
+        fill=(255, 255, 255),
+        font=title_font
+    )
+
+    draw.text(
+        (RANK_X, header_y),
+        "#",
+        fill=(180, 180, 180),
+        font=body_font
+    )
+
+    draw.text(
+        (USER_X, header_y),
+        "USER",
+        fill=(180, 180, 180),
+        font=body_font
+    )
+
+    draw.text(
+        (470, header_y),
+        "SCORE",
+        fill=(180, 180, 180),
+        font=body_font
+    )
+
+    draw.line(
+        (20, header_y + 35, 580, header_y + 35),
+        fill=(90, 90, 90),
+        width=2
+    )
+
+    y = header_y + 50
+
+    for pos, (username, score, uid) in enumerate(rows, start=1):
+
+        # Zebra rows
+
+        if pos % 2 == 0:
+            draw.rectangle(
+                (
+                    10,
+                    y - 4,
+                    590,
+                    y + 34
+                ),
+                fill=(42, 45, 50)
+            )
+
+        # Rank
+
+        draw.text(
+            (RANK_X, y),
+            str(pos),
+            fill=(255, 255, 255),
+            font=body_font
+        )
+
+        # Username
+
+        draw.text(
+            (USER_X, y),
+            trim(username, 18),
+            fill=(255, 255, 255),
+            font=body_font
+        )
+
+        # Score
+
+        if score == "—":
+            score_text = "—"
+        else:
+            score_text = format_score(score)
+
+        bbox = draw.textbbox(
+            (0, 0),
+            score_text,
+            font=body_font
+        )
+
+        score_width = bbox[2] - bbox[0]
+
+        draw.text(
+            (SCORE_RIGHT - score_width, y),
+            score_text,
+            fill=(255, 255, 255),
+            font=body_font
+        )
+
+        y += row_height
+
+    stats_font = ImageFont.truetype(
+        "assets/fonts/JetBrainsMono-Regular.ttf",
+        24
+    )
+
+    draw.text(
+        (20, 720),
+        f"Users: {users_count:,}".replace(",", " "),
+        fill=(180, 180, 180),
+        font=stats_font
+    )
+
+    draw.text(
+        (350, 720),
+        f"Rolls: {rolls_count:,}".replace(",", " "),
+        fill=(180, 180, 180),
+        font=stats_font
+    )
+
+    buffer = io.BytesIO()
+
+    img.save(
+        buffer,
+        format="PNG"
+    )
+
+    buffer.seek(0)
+
+    return buffer
+
 # ---------------- BOT SETUP ----------------
 
 intents = discord.Intents.default()
-bot = commands.Bot(command_prefix=None, intents=intents)
+bot = commands.Bot(command_prefix="rollf_", intents=intents)
 
 # ---------------- EVENTS ----------------
 
@@ -809,18 +971,33 @@ async def stats(
 
 @bot.tree.command(
     name="help",
-    description="Show setup instructions"
+    description="Help and setup instructions"
 )
 async def help_cmd(interaction: discord.Interaction):
-    if not interaction.user.guild_permissions.manage_guild:
-        await interaction.response.send_message(
-            "Admins only.",
-            ephemeral=True
-        )
-        return
+
+    embed = discord.Embed(
+        title="RollF",
+        description=(
+            "**Official Discord Server**\n"
+            "https://discord.gg/Jp58N2Sr5b\n\n"
+            "**Getting Started**\n"
+            "RollF can post one daily roll automatically, "
+            "but needs a channel to be configured first.\n\n"
+            "**To enable daily rolls:**\n"
+            "• Run `/setchannel`\n"
+            "• Choose the channel where RollF should post\n"
+            "• Make sure RollF has permission to send messages\n\n"
+            "**Available commands:**\n"
+            "• `/roll` — Roll your daily number\n"
+            "• `/leaderboards` — View rankings\n"
+            "• `/stats` — View detailed statistics\n"
+            "• `/setchannel` — Configure daily rolls"
+        ),
+        color=discord.Color.dark_grey()
+    )
 
     await interaction.response.send_message(
-        ONBOARDING_TEXT,
+        embed=embed,
         ephemeral=True
     )
 
@@ -892,7 +1069,6 @@ async def roll(interaction: discord.Interaction):
             )
             return
 
-        LEADERBOARD_CACHE.clear()
         await interaction.response.send_message(
             f"{interaction.user.mention} rolled **{value}** 🎲"
         )
@@ -922,7 +1098,6 @@ async def roll(interaction: discord.Interaction):
         )
         return
 
-    LEADERBOARD_CACHE.clear()
     current_streak, _ = calculate_streaks(interaction.user.id)
     milestones = {10, 100, 500, 1000}
 
@@ -961,15 +1136,6 @@ async def leaderboards(
     period: app_commands.Choice[str] = None
 ):
     period_value = period.value if period else "today"
-    cache_key = period_value
-    now_ts = time.time()
-
-    cached = LEADERBOARD_CACHE.get(cache_key)
-
-    if cached and now_ts - cached["time"] < LEADERBOARD_CACHE_TTL:
-        embed = cached["embed"]
-        await interaction.response.send_message(embed=embed)
-        return
 
     now = datetime.now(TZ)
 
@@ -1027,7 +1193,7 @@ async def leaderboards(
 
         rows = rows[:10]
 
-        title_suffix = "Longest Streaks — All Time"
+        title_suffix = "Longest Streaks"
         stats_row = (len(streak_data), 0)
 
     # =========================
@@ -1077,7 +1243,7 @@ async def leaderboards(
             start_date = start.date().isoformat()
             end_date = end.date().isoformat()
 
-            title_suffix = f"{now.strftime('%B')} {now.year}"
+            title_suffix = now.strftime("%B")
 
         elif period_value == "year":
             start = datetime(now.year, 1, 1, tzinfo=TZ)
@@ -1157,60 +1323,31 @@ async def leaderboards(
     # RENDER (COMMON)
     # =========================
 
-    embed = discord.Embed(title="Leaderboards")
-
-    column_label = "DAYS" if period_value == "streak" else "SCORE"
-
-    lines = []
-    header = f"{'#':<3} {'USER':<16} {column_label:>10}"
-    lines.append(header)
-    lines.append("-" * len(header))
-
-    for i, (username, score, uid) in enumerate(rows, start=1):
-        name = trim(username)
-
-        if i == 1:
-            medal = " 🥇"
-        elif i == 2:
-            medal = " 🥈"
-        elif i == 3:
-            medal = " 🥉"
-        else:
-            medal = ""
-
-        lines.append(f"{i:<3} {name:<16} {score:>10,}{medal}")
-
-    block = "\n".join(lines) if rows else "No data."
-
-    embed.add_field(
-        name=title_suffix,
-        value=f"```{block}```",
-        inline=False
-    )
+    while len(rows) < 10:
+        rows.append(("—", "—", 0))
 
     players_count = stats_row[0] or 0
     rolls_count = stats_row[1] or 0
-    guild_count = len(bot.guilds)
 
-    if period_value == "streak":
-        embed.add_field(
-            name="Statistics",
-            value=(
-                f"Users: {players_count}\n"
-                f"Guilds: {guild_count}"
-            ),
-            inline=False
-        )
-    else:
-        embed.add_field(
-            name="Statistics",
-            value=(
-                f"Users: {players_count}\n"
-                f"Rolls: {rolls_count}\n"
-                f"Guilds: {guild_count}"
-            ),
-            inline=False
-        )
+    png = render_leaderboard_png(
+        title_suffix,
+        rows,
+        players_count,
+        rolls_count
+    )
+
+    file = discord.File(
+        png,
+        filename="leaderboard.png"
+    )
+
+    embed = discord.Embed(
+       color=discord.Color.dark_grey()
+    )
+
+    embed.set_image(
+        url="attachment://leaderboard.png"
+    )
 
     user_rank = None
     user_score = None
@@ -1297,11 +1434,10 @@ async def leaderboards(
         reset_text = f"Next reset in {time_left} • Europe/Stockholm (CET/CEST)"
 
     embed.set_footer(text=reset_text)
-    LEADERBOARD_CACHE[cache_key] = {
-        "time": time.time(),
-        "embed": embed
-    }
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(
+        embed=embed,
+        file=file
+    )
 
 @bot.tree.command(
     name="setchannel",
