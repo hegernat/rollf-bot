@@ -26,6 +26,7 @@ The source code for the bot is available here on GitHub.
 - One roll per user per calendar day (Europe/Stockholm)
 - Roll range: 1–100
 - Automatic daily bot roll
+- PNG-rendered leaderboards for consistent formatting across all Discord clients
 - Global cross-server leaderboards
 - Period-based leaderboards:
   - Today
@@ -58,15 +59,13 @@ Public:
 - `/leaderboards` – View period-based rankings
 - `/stats` – View detailed statistics
 - `/setchannel` – Configure daily bot roll channel (admin)
-- `/help` – Show setup information (admin)
+- `/help` – Show setup information and support links
 
 Owner-only (optional, requires ADMIN_MODE=true):
 
-- `/undo` – Delete latest roll for a user
 - `/export` – Export guild & global bot statistics
 - `/user` – View full roll history summary for a user
-- `/forceroll` – Insert a manual roll
-- `/purgeuser` – Delete all rolls for a user
+
 
 ---
 
