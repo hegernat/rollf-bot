@@ -1053,10 +1053,20 @@ async def roll(interaction: discord.Interaction):
         )
         return
 
-
     value = secrets.randbelow(100) + 1
 
-    steps = secrets.randbelow(6)
+    now = datetime.now(TZ)
+
+    april_fools = (
+        now.month == 4 and
+        now.day == 1
+    )
+
+    if april_fools:
+        steps = 10 + secrets.randbelow(11)
+        print("!!! APRIL FOOLS ACTIVE !!!")
+    else:
+        steps = secrets.randbelow(6)
 
     if steps == 0:
         upsert_user(interaction.user.id, interaction.user.name)
@@ -1080,14 +1090,23 @@ async def roll(interaction: discord.Interaction):
     msg = await interaction.original_response()
 
     for _ in range(steps):
-        fake = secrets.randbelow(100) + 1
-        while fake == value:
+
+        if april_fools:                                             # April Fools' Day event
+            fake = secrets.randbelow(900_000_000) + 100_000_000     # Displays fake massive roll values on April 1st.
+        else:                                                       # Real values are still stored in the database.
             fake = secrets.randbelow(100) + 1
 
+            while fake == value:
+                fake = secrets.randbelow(100) + 1
+
         await msg.edit(
-            content=f"{interaction.user.mention} rolling {fake}"
+            content=f"{interaction.user.mention} rolling {fake:,}"
         )
-        await asyncio.sleep(0.5)
+
+        if april_fools:
+            await asyncio.sleep(0.2)
+        else:
+            await asyncio.sleep(0.5)
 
     upsert_user(interaction.user.id, interaction.user.name)
     success = insert_roll(interaction.user.id, interaction.user.name, value, "user")
@@ -1099,12 +1118,20 @@ async def roll(interaction: discord.Interaction):
         return
 
     current_streak, _ = calculate_streaks(interaction.user.id)
-    milestones = {10, 100, 500, 1000}
+    milestones = {10, 25, 50, 100, 250, 500, 1000}
+
+    display_value = value
+
+    if april_fools:
+        display_value = (
+            value * 10_000_000
+            + secrets.randbelow(90_000_000)
+        )
 
     if current_streak in milestones:
         await msg.edit(
             content=(
-                f"{interaction.user.mention} rolled **{value}** 🎲\n"
+                f"{interaction.user.mention} rolled **{display_value:,}** 🎲\n"
                 f"🔥 {current_streak}-day streak achieved."
             )
         )
@@ -1115,7 +1142,7 @@ async def roll(interaction: discord.Interaction):
             )
         else:
             await msg.edit(
-                content=f"{interaction.user.mention} rolled **{value}** 🎲"
+                content=f"{interaction.user.mention} rolled **{display_value:,}** 🎲"
             )
 
 @bot.tree.command(
