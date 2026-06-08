@@ -1,6 +1,6 @@
 # -----------------------------------------
 # RollF – Minimal daily roll Discord bot
-# Copyright (c) 2026 hegernat
+# Copyright (c) 2026 hegernat/plutonium87
 # Licensed under the MIT License
 #
 # Source: https://github.com/hegernat/rollf-bot
@@ -52,12 +52,8 @@ TOPGG_TOKEN = os.getenv("TOPGG_TOKEN")
 
 ONBOARDING_TEXT = (
     "**Thanks for adding RollF!**\n\n"
-    "RollF can post **one daily roll automatically**, but needs a channel to be configured.\n\n"
-    "To enable daily rolls:\n"
-    "• Run `/setchannel` in the channel where you want RollF to post\n"
-    "• Make sure RollF is allowed to send messages in that channel\n\n"
-    "Slash commands like `/roll`, `/leaderboards` and `/stats` work immediately.\n\n"
-    "You can see this message again anytime with `/help`."
+    "Run `/setchannel` to enable daily bot rolls.\n"
+    "Use `/help` for setup and commands."
 )
 
 # ---------------- DB ----------------
@@ -329,7 +325,7 @@ def insert_roll(user_id, username, value, actor_type):
 
     return True
 
-def trim(name, max_len=16):
+def trim(name, max_len=20):
     return name[:max_len-1] + "…" if len(name) > max_len else name
     
 def get_user_stats(user_id: int):
@@ -477,11 +473,17 @@ def get_period_stats(user_id: int, start_ts: int, end_ts: int):
 
 def format_score(n: int) -> str:
     if n >= 1000:
-        truncated = (n // 100) / 10
-        return f"{truncated:.1f}k"
+        return f"{n / 1000:.1f}k"
     return str(n)
 
-def render_leaderboard_png(title, rows, users_count=0, rolls_count=0):
+def render_leaderboard_png(
+    title,
+    rows,
+    users_count=0,
+    rolls_count=0,
+    reset_text=None,
+    score_label="SCORE"
+):
 
     import io
 
@@ -491,7 +493,7 @@ def render_leaderboard_png(title, rows, users_count=0, rolls_count=0):
     header_y = 120
     row_height = 48
 
-    height = 750
+    height = 820
 
     img = Image.new(
         "RGB",
@@ -513,7 +515,7 @@ def render_leaderboard_png(title, rows, users_count=0, rolls_count=0):
 
     RANK_X = 20
     USER_X = 95
-    SCORE_RIGHT = 550
+    SCORE_RIGHT = 580
 
     draw.text(
         (20, top_padding),
@@ -536,9 +538,17 @@ def render_leaderboard_png(title, rows, users_count=0, rolls_count=0):
         font=body_font
     )
 
+    bbox = draw.textbbox(
+        (0, 0),
+        score_label,
+        font=body_font
+    )
+
+    label_width = bbox[2] - bbox[0]
+
     draw.text(
-        (470, header_y),
-        "SCORE",
+        (SCORE_RIGHT - label_width, header_y),
+        score_label,
         fill=(180, 180, 180),
         font=body_font
     )
@@ -579,7 +589,7 @@ def render_leaderboard_png(title, rows, users_count=0, rolls_count=0):
 
         draw.text(
             (USER_X, y),
-            trim(username, 18),
+            trim(username, 20),
             fill=(255, 255, 255),
             font=body_font
         )
@@ -614,18 +624,27 @@ def render_leaderboard_png(title, rows, users_count=0, rolls_count=0):
     )
 
     draw.text(
-        (20, 720),
-        f"Users: {users_count:,}".replace(",", " "),
+        (20, 710),
+        f"Users: {users_count:,}",
         fill=(180, 180, 180),
         font=stats_font
     )
 
-    draw.text(
-        (350, 720),
-        f"Rolls: {rolls_count:,}".replace(",", " "),
-        fill=(180, 180, 180),
-        font=stats_font
-    )
+    if rolls_count is not None:
+        draw.text(
+            (20, 745),
+            f"Rolls: {rolls_count:,}",
+            fill=(180, 180, 180),
+            font=stats_font
+        )
+
+    if reset_text:
+        draw.text(
+            (20, 780),
+            reset_text,
+            fill=(180, 180, 180),
+            font=stats_font
+        )
 
     buffer = io.BytesIO()
 
@@ -1064,7 +1083,7 @@ async def roll(interaction: discord.Interaction):
 
     if april_fools:
         steps = 10 + secrets.randbelow(11)
-        print("!!! APRIL FOOLS ACTIVE !!!")
+        print("--- APRIL FOOLS ACTIVE ---")
     else:
         steps = secrets.randbelow(6)
 
@@ -1221,7 +1240,7 @@ async def leaderboards(
         rows = rows[:10]
 
         title_suffix = "Longest Streaks"
-        stats_row = (len(streak_data), 0)
+        stats_row = (len(streak_data), None)
 
     # =========================
     # NORMAL PERIOD LEADERBOARDS
@@ -1354,77 +1373,18 @@ async def leaderboards(
         rows.append(("—", "—", 0))
 
     players_count = stats_row[0] or 0
-    rolls_count = stats_row[1] or 0
+    rolls_count = stats_row[1]
 
-    png = render_leaderboard_png(
-        title_suffix,
-        rows,
-        players_count,
-        rolls_count
-    )
+    score_label = "SCORE"
 
-    file = discord.File(
-        png,
-        filename="leaderboard.png"
-    )
-
-    embed = discord.Embed(
-       color=discord.Color.dark_grey()
-    )
-
-    embed.set_image(
-        url="attachment://leaderboard.png"
-    )
-
-    user_rank = None
-    user_score = None
-
-    if user_rank is None:
-        with db() as con:
-            user_score = con.execute(
-                "SELECT score FROM user_scores WHERE user_id = ?",
-                (interaction.user.id,)
-            ).fetchone()
-
-        if user_score:
-            user_score = user_score[0]
-
-    for index, row in enumerate(ranking, start=1):
-
-        uid = row[0]
-        score = row[-1]
-
-        if uid == interaction.user.id:
-            user_rank = index
-            user_score = score
-            break
-
-    delta = None
-
-    if user_rank and user_rank > 1 and user_rank - 2 < len(ranking):
-        above_row = ranking[user_rank - 2]
-        above_score = above_row[-1]
-        delta = above_score - user_score
-
-    top_ids = [uid for _, _, uid in rows]
-
-    if user_rank and interaction.user.id not in top_ids:
-        if delta is not None:
-            text = f"#{user_rank} — {user_score:,}\n↥ {delta:,} to #{user_rank-1}"
-        else:
-            text = f"#{user_rank} — {user_score:,}"
-
-        embed.add_field(
-            name="Your Position",
-            value=text,
-            inline=False
-        )
+    if period_value == "streak":
+        score_label = "DAYS"
 
     # =========================
     # RESET TIMER
     # =========================
 
-    reset_text = "Europe/Stockholm (CET/CEST)"
+    reset_text = None
 
     if period_value in ("today", "week", "month"):
         if period_value == "today":
@@ -1444,23 +1404,54 @@ async def leaderboards(
         remaining = max(0, int((reset_point - now).total_seconds()))
 
         if remaining < 3600:
-            # under 1 hour → minutes only
             minutes = -(-remaining // 60)
             time_left = f"{minutes}m"
 
         elif remaining < 86400:
-            # under 24h → hours only
             hours = remaining // 3600
             time_left = f"{hours}h"
 
         else:
-            # 1+ days → days only
             days = remaining // 86400
             time_left = f"{days}d"
 
-        reset_text = f"Next reset in {time_left} • Europe/Stockholm (CET/CEST)"
+        reset_text = f"Next reset in {time_left} • CET/CEST"
 
-    embed.set_footer(text=reset_text)
+    elif period_value == "alltime":
+
+        with db() as con:
+            first_roll = con.execute("""
+                SELECT MIN(rolled_at)
+                FROM rolls
+                WHERE actor_type = 'user'
+                """).fetchone()[0]
+
+        if first_roll:
+            started = datetime.fromtimestamp(first_roll, TZ)
+            reset_text = f"Since {started.strftime('%b %d, %Y')}"
+
+    png = render_leaderboard_png(
+        title_suffix,
+        rows,
+        players_count,
+        rolls_count,
+        reset_text=reset_text,
+        score_label=score_label
+    )
+
+    file = discord.File(
+        png,
+        filename="leaderboard.png"
+    )
+
+    embed = discord.Embed(
+       color=discord.Color.dark_grey()
+    )
+
+    embed.set_image(
+        url="attachment://leaderboard.png"
+    )
+
     await interaction.response.send_message(
         embed=embed,
         file=file
@@ -1562,14 +1553,42 @@ if ADMIN_MODE:
     )
     async def admin_user(
         interaction: discord.Interaction,
-        user: discord.User
+        user: discord.User | None = None,
+        user_id: str | None = None
     ):
 
         if interaction.user.id != OWNER_ID:
-            await interaction.response.send_message("No.", ephemeral=True)
+            await interaction.response.send_message(
+                "No.",
+                ephemeral=True
+            )
             return
 
-        uid = user.id
+        if user:
+            uid = user.id
+
+        elif user_id:
+            try:
+                uid = int(user_id)
+            except ValueError:
+                await interaction.response.send_message(
+                    "Invalid user ID.",
+                    ephemeral=True
+                )
+                return
+
+        else:
+            await interaction.response.send_message(
+                "Provide a user or user ID.",
+                ephemeral=True
+            )
+            return
+
+        try:
+            fetched_user = await bot.fetch_user(uid)
+            username = fetched_user.name
+        except Exception:
+            username = f"Unknown ({uid})"
 
         with db() as con:
 
@@ -1600,7 +1619,7 @@ if ADMIN_MODE:
         last_roll = datetime.fromtimestamp(rolls[-1][1], TZ).strftime("%Y-%m-%d")
 
         await interaction.response.send_message(
-            f"User: {user.name}\n"
+            f"User: {username}\n"
             f"Rolls: {total_rolls}\n"
             f"Best roll: {best_roll}\n"
             f"Average: {avg_roll}\n"

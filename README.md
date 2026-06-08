@@ -24,9 +24,9 @@ The source code for the bot is available here on GitHub.
 ## Features
 
 - One roll per user per calendar day (Europe/Stockholm)
+- Seasonal easter egg event
 - Roll range: 1–100
 - Automatic daily bot roll
-- PNG-rendered leaderboards for consistent formatting across all Discord clients
 - Global cross-server leaderboards
 - Period-based leaderboards:
   - Today
@@ -35,9 +35,11 @@ The source code for the bot is available here on GitHub.
   - Year
   - All Time
   - Longest Streaks
-- Leaderboard position delta (distance to next rank)
+- PNG-rendered leaderboards with reset timers
+- Historical streak leaderboards
+- All-time tracking information
 - Streak tracking (current and best)
-- Streak milestone notifications (10 / 100 / 500 / 1000 days)
+- Streak milestone notifications
 - Detailed user statistics:
   - Rank
   - Best roll
