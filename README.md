@@ -35,9 +35,9 @@ The source code for the bot is available here on GitHub.
   - Year
   - All Time
   - Longest Streaks
-- PNG-rendered leaderboards with reset timers
+- PNG-rendered leaderboards with integrated reset timers
 - Historical streak leaderboards
-- All-time tracking information
+- Admin user lookup by Discord User ID
 - Streak tracking (current and best)
 - Streak milestone notifications
 - Detailed user statistics:

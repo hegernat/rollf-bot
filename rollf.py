@@ -487,7 +487,7 @@ def render_leaderboard_png(
 
     import io
 
-    width = 600
+    width = 640
 
     top_padding = 20
     header_y = 120
@@ -505,17 +505,17 @@ def render_leaderboard_png(
 
     title_font = ImageFont.truetype(
         "assets/fonts/JetBrainsMono-Regular.ttf",
-        36
+        38
     )
 
     body_font = ImageFont.truetype(
         "assets/fonts/JetBrainsMono-Regular.ttf",
-        28
+        30
     )
 
     RANK_X = 20
     USER_X = 95
-    SCORE_RIGHT = 580
+    SCORE_RIGHT = 620
 
     draw.text(
         (20, top_padding),
@@ -554,7 +554,7 @@ def render_leaderboard_png(
     )
 
     draw.line(
-        (20, header_y + 35, 580, header_y + 35),
+        (20, header_y + 35, 620, header_y + 35),
         fill=(90, 90, 90),
         width=2
     )
@@ -563,20 +563,16 @@ def render_leaderboard_png(
 
     for pos, (username, score, uid) in enumerate(rows, start=1):
 
-        # Zebra rows
-
         if pos % 2 == 0:
             draw.rectangle(
                 (
                     10,
-                    y - 4,
-                    590,
-                    y + 34
+                    y + 1,
+                    630,
+                    y + 39
                 ),
                 fill=(42, 45, 50)
             )
-
-        # Rank
 
         draw.text(
             (RANK_X, y),
@@ -585,16 +581,12 @@ def render_leaderboard_png(
             font=body_font
         )
 
-        # Username
-
         draw.text(
             (USER_X, y),
             trim(username, 20),
             fill=(255, 255, 255),
             font=body_font
         )
-
-        # Score
 
         if score == "—":
             score_text = "—"
@@ -620,7 +612,7 @@ def render_leaderboard_png(
 
     stats_font = ImageFont.truetype(
         "assets/fonts/JetBrainsMono-Regular.ttf",
-        24
+        26
     )
 
     draw.text(
@@ -656,7 +648,7 @@ def render_leaderboard_png(
     buffer.seek(0)
 
     return buffer
-
+    
 # ---------------- BOT SETUP ----------------
 
 intents = discord.Intents.default()
