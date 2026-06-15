@@ -5,6 +5,9 @@
 *.db*
 *.sqlite*
 
+# Logs
+logs/
+
 # Backups
 backups/
 backup/
