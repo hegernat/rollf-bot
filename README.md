@@ -49,6 +49,8 @@ The source code for the bot is available here on GitHub.
 - Reset timers for active periods
 - Persistent SQLite storage
 - Automated compressed weekly database backups (180-day retention)
+- Optional rotating operational logs
+- Slash command usage logging
 - Owner admin tools for maintenance
 
 ---
@@ -128,6 +130,7 @@ Create a .env file in the project root:
 ```env
 DISCORD_TOKEN=your_token_here
 ADMIN_MODE=true
+ENABLE_COMMAND_LOGGING=true
 OWNER_ID=your_user_id_here
 ADMIN_GUILD_ID=your_server_id_here
 ```
@@ -154,6 +157,7 @@ Example `.env`:
 ```env
 DISCORD_TOKEN=your_token_here
 ADMIN_MODE=false
+ENABLE_COMMAND_LOGGING=true
 OWNER_ID=your_user_id_here
 ADMIN_GUILD_ID=your_server_id_here
 ```
@@ -166,6 +170,7 @@ ADMIN_GUILD_ID=your_server_id_here
 - Uses SQLite (WAL mode recommended)
 - Compatible with systemd service deployment
 - Supports automated compressed database backups
+- Optional rotating operation logs with automatic retention
 
 RollF performs automatic schema migrations on startup,
 including backfilling roll_date for historical roll records.

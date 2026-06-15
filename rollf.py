@@ -16,6 +16,8 @@ import csv
 import io
 import os
 import discord
+import logging
+from logging.handlers import TimedRotatingFileHandler
 from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
@@ -23,10 +25,11 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from PIL import Image, ImageDraw, ImageFont
 
+
 # ---------------- CONFIG ----------------
 
 TZ = ZoneInfo("Europe/Stockholm")
-BOT_NAME = "RollF"
+BOT_NAME = "#RollF"
 DB_PATH = "bot.db"
 
 BOTLIST_COMMANDS = [
@@ -39,6 +42,11 @@ BOTLIST_COMMANDS = [
 
 load_dotenv()
 
+ENABLE_COMMAND_LOGGING = (
+    os.getenv("ENABLE_COMMAND_LOGGING", "false").lower()
+    == "true"
+)
+LOG_RETENTION_DAYS = 30
 DAILY_ROLL_TASK = None
 
 # ---------------- ADMIN ----------------
@@ -73,8 +81,8 @@ async def post_bot_stats():
                     headers={"Authorization": BOTLIST_TOKEN},
                     timeout=aiohttp.ClientTimeout(total=10)
                 )
-            except Exception as e:
-                print("Botlist stats failed:", e)
+            except Exception:
+                log_error("BOTLIST STATS UPDATE FAILED")
 
         if TOPGG_TOKEN:
             try:
@@ -84,8 +92,8 @@ async def post_bot_stats():
                     headers={"Authorization": TOPGG_TOKEN},
                     timeout=aiohttp.ClientTimeout(total=10)
                 )
-            except Exception as e:
-                print("Top.gg stats failed:", e)
+            except Exception:
+                log_error("TOPGG STATS UPDATE FAILED")
 
 async def post_botlist_commands():
 
@@ -102,8 +110,10 @@ async def post_botlist_commands():
                 headers={"Authorization": BOTLIST_TOKEN},
                 timeout=aiohttp.ClientTimeout(total=10)
             )
-        except Exception as e:
-            print("Botlist commands update failed:", e)
+        except Exception:
+            log_error(
+                "BOTLIST COMMAND UPDATE FAILED"
+            )
 
 def ensure_schema():
 
@@ -324,6 +334,62 @@ def insert_roll(user_id, username, value, actor_type):
             """, (user_id, roll_date, value))
 
     return True
+
+def setup_logging():
+
+    if not ENABLE_COMMAND_LOGGING:
+        return None
+
+    os.makedirs("logs", exist_ok=True)
+
+    handler = TimedRotatingFileHandler(
+        filename="logs/rollf.log",
+        when="midnight",
+        interval=1,
+        backupCount=LOG_RETENTION_DAYS,
+        encoding="utf-8"
+    )
+
+    handler.suffix = "%Y%m%d"
+
+    formatter = logging.Formatter(
+        "[%(asctime)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+
+    handler.setFormatter(formatter)
+
+    logger = logging.getLogger("rollf")
+    logger.setLevel(logging.INFO)
+
+    if not logger.handlers:
+        logger.addHandler(handler)
+
+    return logger
+
+def log_command(
+    interaction: discord.Interaction,
+    command_name: str
+):
+    if not LOGGER:
+        return
+
+    LOGGER.info(
+        "COMMAND %s user=%s",
+        command_name,
+        interaction.user.id
+    )
+
+LOGGER = setup_logging()
+
+def log_event(message: str):
+    if LOGGER:
+        LOGGER.info(message)
+
+
+def log_error(message: str):
+    if LOGGER:
+        LOGGER.exception(message)
 
 def trim(name, max_len=20):
     return name[:max_len-1] + "…" if len(name) > max_len else name
@@ -700,6 +766,12 @@ async def on_guild_remove(guild: discord.Guild):
 
 @bot.event
 async def on_ready():
+
+    if LOGGER:
+        LOGGER.info(
+            f"BOT STARTED ({BOT_NAME})"
+        )
+
     global DAILY_ROLL_TASK
 
     ensure_schema()
@@ -712,10 +784,18 @@ async def on_ready():
 
     # -------- Global command sync --------
     try:
-        await bot.tree.sync()
+        synced = await bot.tree.sync()
+
         print("Global commands synced.")
-    except Exception as e:
-        print("Global sync failed:", e)
+
+        log_event(
+            f"COMMANDS SYNCED count={len(synced)}"
+        )
+
+    except Exception:
+        log_error(
+            "GLOBAL COMMAND SYNC FAILED"
+        )
 
     # -------- Admin guild sync (safe) --------
     if ADMIN_MODE and ADMIN_GUILD_ID:
@@ -793,6 +873,11 @@ async def bot_daily_roll():
         value = secrets.randbelow(100) + 1
         insert_roll(0, BOT_NAME, value, "bot")
 
+
+        log_event(
+            f"BOT ROLL value={value}"
+        )
+
         with db() as con:
             rows = con.execute(
                 "SELECT guild_id, channel_id FROM guild_channels"
@@ -845,6 +930,8 @@ async def stats(
     interaction: discord.Interaction,
     user: discord.User | None = None
 ):
+    log_command(interaction, "/stats")
+
     target = user or interaction.user
     stats = get_user_stats(target.id)
     start, end = today_range()
@@ -986,6 +1073,8 @@ async def stats(
 )
 async def help_cmd(interaction: discord.Interaction):
 
+    log_command(interaction, "/help")
+
     embed = discord.Embed(
         title="RollF",
         description=(
@@ -1017,6 +1106,9 @@ async def help_cmd(interaction: discord.Interaction):
     description="Roll a number between 1 and 100 (once per day)"
 )
 async def roll(interaction: discord.Interaction):
+
+    log_command(interaction, "/roll")
+
     start, end = today_range()
 
     with db() as con:
@@ -1173,6 +1265,8 @@ async def leaderboards(
     interaction: discord.Interaction,
     period: app_commands.Choice[str] = None
 ):
+    log_command(interaction, "/leaderboards")
+
     period_value = period.value if period else "today"
 
     now = datetime.now(TZ)
@@ -1455,6 +1549,9 @@ async def leaderboards(
 )
 @app_commands.checks.has_permissions(manage_guild=True)
 async def setchannel(interaction: discord.Interaction, channel: discord.TextChannel):
+
+    log_command(interaction, "/setchannel")
+
     with db() as con:
         con.execute(
             """INSERT INTO guild_channels (guild_id, channel_id, set_at)

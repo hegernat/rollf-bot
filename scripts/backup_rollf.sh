@@ -1,34 +1,48 @@
 #!/bin/bash
 
-set -e
+set -euo pipefail
 
 PROJECT_DIR="/opt/bots/rollf-bot"
 DB_FILE="$PROJECT_DIR/bot.db"
 BACKUP_DIR="$PROJECT_DIR/backups"
 LOG_FILE="$BACKUP_DIR/backup.log"
 
-DATE=$(date +"%Y%m%d_%H%M")
-TMP_BACKUP="$BACKUP_DIR/database_$DATE.db"
-FINAL_BACKUP="$TMP_BACKUP.gz"
-
-echo "[$(date)] Starting backup..." >> "$LOG_FILE"
-
-# Ensure backup directory exists
 mkdir -p "$BACKUP_DIR"
 
-# Force WAL checkpoint (flush -wal into main DB)
-sqlite3 "$DB_FILE" "PRAGMA wal_checkpoint(FULL);" >> "$LOG_FILE" 2>&1
+DATE=$(date +"%Y%m%d_%H%M")
 
-# Copy DB safely
+TMP_BACKUP="$BACKUP_DIR/database_${DATE}.db"
+FINAL_BACKUP="${TMP_BACKUP}.gz"
+
+log() {
+    echo "[$(date '+%F %T')] $1" >> "$LOG_FILE"
+}
+
+log "Starting backup"
+
+# Flush WAL into main database and truncate WAL file
+sqlite3 "$DB_FILE" "PRAGMA wal_checkpoint(TRUNCATE);" >> "$LOG_FILE" 2>&1
+
+# Create backup
 cp "$DB_FILE" "$TMP_BACKUP"
 
 # Compress backup
 gzip "$TMP_BACKUP"
 
-echo "[$(date)] Backup created: $FINAL_BACKUP" >> "$LOG_FILE"
+echo "[$(date '+%F %T')] DB BACKUP EXECUTED" \
+>> /opt/bots/rollf-bot/logs/rollf.log
 
-# Rotation: delete backups older than 90 days
-find "$BACKUP_DIR" -type f -name "database_*.db.gz" -mtime +180 -delete
+# Verify archive integrity
+gzip -t "$FINAL_BACKUP"
 
-echo "[$(date)] Rotation complete." >> "$LOG_FILE"
+log "Backup created: $(basename "$FINAL_BACKUP")"
+
+# Delete backups older than 180 days
+find "$BACKUP_DIR" \
+    -type f \
+    -name "database_*.db.gz" \
+    -mtime +180 \
+    -delete
+
+log "Rotation complete"
 echo "--------------------------------------" >> "$LOG_FILE"

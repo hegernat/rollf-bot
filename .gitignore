@@ -9,6 +9,7 @@
 backups/
 backup/
 *.bak
+*.log
 
 # Python
 __pycache__/
